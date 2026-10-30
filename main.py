@@ -259,6 +259,7 @@ def dashboard():
                             <th>Pair</th>
                             <th>M1</th>
                             <th>M5</th>
+                            <th>TRADE STATUS</th>
                         </tr>
                     </thead>
                     <tbody id="results"></tbody>
