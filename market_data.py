@@ -13,6 +13,12 @@ BASE_URL = "https://api.twelvedata.com/time_series"
 
 
 async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
+    cache_key = (pair, interval, outputsize)
+
+    cached = CACHE.get(cache_key)
+
+    if cached and time.time() - cached["time"] < CACHE_TTL:
+        return cached["data"]
     if not API_KEY:
         return {"error": "API key is missing"}
 
