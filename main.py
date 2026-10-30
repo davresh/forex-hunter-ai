@@ -1,3 +1,4 @@
+import asyncio
 from indicators import analyze_market
 from market_data import get_candles
 from fastapi import FastAPI
@@ -88,5 +89,49 @@ async def scan_pair_endpoint(pair: str):
 
     return {
         "pair": pair,
+        "results": results
+    }
+
+@app.get("/scan-all")
+async def scan_all(offset: int = 0, limit: int = 2):
+    if limit < 1 or limit > 4 or offset < 0:
+        return {"error": "Use limit from 1 to 4 and offset from 0"}
+
+    selected_pairs = PAIRS[offset:offset + limit]
+    results = []
+
+    for pair in selected_pairs:
+        pair_result = {
+            "pair": pair,
+            "timeframes": {}
+        }
+
+        for interval in ["1min", "5min"]:
+            try:
+                candles = await get_candles(pair, interval)
+
+                if isinstance(candles, dict):
+                    pair_result["timeframes"][interval] = candles
+                else:
+                    pair_result["timeframes"][interval] = {
+                        "candles_count": len(candles),
+                        "analysis": analyze_market(candles)
+                    }
+
+            except Exception as error:
+                pair_result["timeframes"][interval] = {
+                    "error": str(error)
+                }
+
+            await asyncio.sleep(1)
+
+        results.append(pair_result)
+
+    next_offset = offset + len(selected_pairs)
+
+    return {
+        "total_pairs": len(PAIRS),
+        "scanned_pairs": len(selected_pairs),
+        "next_offset": next_offset if next_offset < len(PAIRS) else None,
         "results": results
     }
