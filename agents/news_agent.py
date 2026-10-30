@@ -1,5 +1,8 @@
 
+import asyncio
+import time
 import httpx
+
 from datetime import datetime, timezone, timedelta
 
 from config import (
@@ -8,8 +11,6 @@ from config import (
     NEWS_BLOCK_AFTER_MINUTES,
 )
 
-# Бесплатный источник календаря Forex Factory.
-# Доступность и формат могут меняться.
 NEWS_URL = (
     "https://nfs.faireconomy.media/"
     "ff_calendar_thisweek.json"
@@ -17,16 +18,61 @@ NEWS_URL = (
 
 HIGH_IMPACT = {"High", "Holiday"}
 
+CACHE_TTL = 300
+
+_news_cache = {
+    "data": None,
+    "timestamp": 0
+}
+
+_news_lock = asyncio.Lock()
+
+
+async def get_news_calendar():
+    """Download and cache the economic calendar."""
+
+    cached_data = _news_cache["data"]
+
+    if (
+        cached_data is not None
+        and time.time() - _news_cache["timestamp"] < CACHE_TTL
+    ):
+        return cached_data
+
+    async with _news_lock:
+        # Check again after waiting for another request.
+        cached_data = _news_cache["data"]
+
+        if (
+            cached_data is not None
+            and time.time() - _news_cache["timestamp"] < CACHE_TTL
+        ):
+            return cached_data
+
+        async with httpx.AsyncClient(
+            timeout=10,
+            follow_redirects=True
+        ) as client:
+            response = await client.get(NEWS_URL)
+            response.raise_for_status()
+
+            data = response.json()
+
+        if not isinstance(data, list):
+            raise ValueError("Invalid news calendar format")
+
+        _news_cache["data"] = data
+        _news_cache["timestamp"] = time.time()
+
+        return data
+
 
 async def news_agent(pair):
     """
-    News Agent.
+    Blocks signals near high-impact economic events.
 
-    Checks high-impact economic events for currencies
-    in the selected pair.
-
-    If the calendar is unavailable, fails closed:
-    no automatic signal is approved.
+    If the calendar is unavailable, automatic signals
+    are rejected for safety.
     """
 
     if not NEWS_ENABLED:
@@ -39,24 +85,19 @@ async def news_agent(pair):
         }
 
     try:
-        currencies = pair.replace("/", " ").split()
+        currencies = pair.upper().replace("/", " ").split()
 
         if len(currencies) != 2:
             raise ValueError("Invalid currency pair")
 
-        async with httpx.AsyncClient(
-            timeout=10,
-            follow_redirects=True
-        ) as client:
-            response = await client.get(NEWS_URL)
-            response.raise_for_status()
-            data = response.json()
+        data = await get_news_calendar()
 
         now = datetime.now(timezone.utc)
 
         before = timedelta(
             minutes=NEWS_BLOCK_BEFORE_MINUTES
         )
+
         after = timedelta(
             minutes=NEWS_BLOCK_AFTER_MINUTES
         )
@@ -64,6 +105,9 @@ async def news_agent(pair):
         relevant_events = []
 
         for event in data:
+            if not isinstance(event, dict):
+                continue
+
             currency = str(
                 event.get("country", "")
             ).upper()
@@ -84,7 +128,7 @@ async def news_agent(pair):
                 continue
 
             event_time = datetime.fromisoformat(
-                date_text.replace("Z", "+00:00")
+                str(date_text).replace("Z", "+00:00")
             )
 
             if event_time.tzinfo is None:
@@ -95,7 +139,10 @@ async def news_agent(pair):
             if now - before <= event_time <= now + after:
                 relevant_events.append({
                     "currency": currency,
-                    "title": event.get("title", "Economic event"),
+                    "title": event.get(
+                        "title",
+                        "Economic event"
+                    ),
                     "impact": impact,
                     "time": event_time.isoformat()
                 })
