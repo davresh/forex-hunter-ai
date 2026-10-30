@@ -1,45 +1,68 @@
+
 import asyncio
+
+from config import PAIRS, TIMEFRAMES
 from market_data import get_candles
-from indicators import analyze_market
-from main import PAIRS
+from agents.chief_agent import chief_agent
 
 
-async def scan_pair(pair, interval):
+async def scan_pair(pair):
+    """
+    Scans one pair using M1 and M5
+    and asks Chief Agent for a final decision.
+    """
+
     try:
-        candles = await get_candles(pair, interval)
+        m1_candles, m5_candles = await asyncio.gather(
+            get_candles(pair, TIMEFRAMES["M1"]),
+            get_candles(pair, TIMEFRAMES["M5"])
+        )
 
-        if isinstance(candles, dict):
+        if isinstance(m1_candles, dict):
             return {
                 "pair": pair,
-                "timeframe": interval,
-                "error": candles.get("error")
+                "signal": "WAIT",
+                "approved": False,
+                "reason": m1_candles.get("error")
             }
 
-        return {
-            "pair": pair,
-            "timeframe": interval,
-            "analysis": analyze_market(candles)
-        }
+        if isinstance(m5_candles, dict):
+            return {
+                "pair": pair,
+                "signal": "WAIT",
+                "approved": False,
+                "reason": m5_candles.get("error")
+            }
+
+        return await chief_agent(
+            pair=pair,
+            m1_candles=m1_candles,
+            m5_candles=m5_candles
+        )
 
     except Exception as error:
         return {
             "pair": pair,
-            "timeframe": interval,
-            "error": str(error)
+            "signal": "WAIT",
+            "approved": False,
+            "reason": str(error)
         }
 
 
 async def scan_all():
+    """
+    Scans all configured pairs sequentially.
+    """
+
     results = []
 
     for pair in PAIRS:
-        for interval in ["1min", "5min"]:
-            result = await scan_pair(pair, interval)
-            results.append(result)
+        result = await scan_pair(pair)
+        results.append(result)
 
-            print(result)
+        print(result)
 
-            await asyncio.sleep(2)
+        await asyncio.sleep(1)
 
     return results
 
