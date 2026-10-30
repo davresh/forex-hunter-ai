@@ -1,4 +1,3 @@
-```python
 import os
 import time
 import asyncio
@@ -82,4 +81,3 @@ async def get_candles(
             return {
                 "error": f"{pair}: {str(retry_error)}"
             }
-```
