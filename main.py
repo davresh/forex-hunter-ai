@@ -195,6 +195,13 @@ async def scan_all(offset: int = 0, limit: int = 2):
     selected_pairs = PAIRS[offset:offset + limit]
     results = []
 
+    summary = {
+        "confirmed_long": 0,
+        "confirmed_short": 0,
+        "waiting": 0,
+        "data_errors": 0
+    }
+
     for pair in selected_pairs:
         pair_result = {
             "pair": pair,
@@ -208,9 +215,11 @@ async def scan_all(offset: int = 0, limit: int = 2):
                 if isinstance(candles, dict):
                     pair_result["timeframes"][interval] = candles
                 else:
+                    analysis = analyze_market(candles)
+
                     pair_result["timeframes"][interval] = {
                         "candles_count": len(candles),
-                        "analysis": analyze_market(candles)
+                        "analysis": analysis
                     }
 
             except Exception as error:
@@ -220,16 +229,35 @@ async def scan_all(offset: int = 0, limit: int = 2):
 
             await asyncio.sleep(1)
 
-        m1 = pair_result["timeframes"].get(
-            "1min", {}
-        ).get("analysis", {}).get("signal")
+        frames = pair_result["timeframes"]
+        m1_data = frames.get("1min", {})
+        m5_data = frames.get("5min", {})
 
-        m5 = pair_result["timeframes"].get(
-            "5min", {}
-        ).get("analysis", {}).get("signal")
+        m1 = m1_data.get("analysis", {}).get("signal")
+        m5 = m5_data.get("analysis", {}).get("signal")
+
+        has_error = (
+            "error" in m1_data
+            or "error" in m5_data
+        )
+
+        if has_error:
+            summary["data_errors"] += 1
+            pair_result["trade_status"] = "DATA ERROR"
+
+        elif m1 == m5 == "LONG":
+            summary["confirmed_long"] += 1
+            pair_result["trade_status"] = "CONFIRMED LONG"
+
+        elif m1 == m5 == "SHORT":
+            summary["confirmed_short"] += 1
+            pair_result["trade_status"] = "CONFIRMED SHORT"
+
+        else:
+            summary["waiting"] += 1
+            pair_result["trade_status"] = "WAITING"
 
         await maybe_send_trade_signal(pair, m1, m5)
-
         results.append(pair_result)
 
     next_offset = offset + len(selected_pairs)
@@ -240,6 +268,7 @@ async def scan_all(offset: int = 0, limit: int = 2):
         "next_offset": (
             next_offset if next_offset < len(PAIRS) else None
         ),
+        "summary": summary,
         "results": results
     }
 
