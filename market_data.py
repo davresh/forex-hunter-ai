@@ -1,3 +1,7 @@
+import time
+
+CACHE = {}
+CACHE_TTL = 60
 import os
 import httpx
 from dotenv import load_dotenv
