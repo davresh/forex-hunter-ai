@@ -414,103 +414,97 @@ def dashboard():
         </div>
 
         <script>
-        async function startScan() {
-            const tbody = document.getElementById("results");
-            const status = document.getElementById("status");
-            const button = document.getElementById("scanButton");
+async function startScan() {
+    const tbody = document.getElementById("results");
+    const status = document.getElementById("status");
+    const button = document.getElementById("scanButton");
 
-            button.disabled = true;
-            tbody.innerHTML = "";
+    button.disabled = true;
+    tbody.innerHTML = "";
 
-            let longCount = 0;
-            let shortCount = 0;
-            let foundPairs = 0;
+    let confirmedLong = 0;
+    let confirmedShort = 0;
+    let waiting = 0;
+    let errors = 0;
+    let scanned = 0;
 
-            try {
-                for (let offset = 0; offset < 28; offset += 2) {
-                    status.textContent =
-                        "Scanning " + Math.min(offset + 2, 28) + " / 28...";
+    try {
+        for (let offset = 0; offset < 28; offset += 2) {
+            status.textContent =
+                "Scanning " + Math.min(offset + 2, 28) + " / 28...";
 
-                    const response = await fetch(
-                        "/scan-all?offset=" + offset + "&limit=2"
-                    );
+            const response = await fetch(
+                "/scan-all?offset=" + offset + "&limit=2"
+            );
 
-                    if (!response.ok) {
-                        throw new Error("Server error: " + response.status);
-                    }
+            if (!response.ok) {
+                throw new Error("Server error: " + response.status);
+            }
 
-                    const data = await response.json();
+            const data = await response.json();
 
-                    if (!data.results) {
-                        throw new Error(data.error || "Invalid response");
-                    }
+            if (!data.results || !data.summary) {
+                throw new Error(data.error || "Invalid response");
+            }
 
-                    for (const item of data.results) {
-                        const frames = item.timeframes || {};
-                        const m1 = frames["1min"]?.analysis?.signal || "ERROR";
-                        const m5 = frames["5min"]?.analysis?.signal || "ERROR";
+            confirmedLong += data.summary.confirmed_long;
+            confirmedShort += data.summary.confirmed_short;
+            waiting += data.summary.waiting;
+            errors += data.summary.data_errors;
 
-                        const hasSignal =
-                            ["LONG", "SHORT"].includes(m1) ||
-                            ["LONG", "SHORT"].includes(m5);
+            for (const item of data.results) {
+                const frames = item.timeframes || {};
 
-                        if (m1 === "LONG") longCount++;
-                        if (m5 === "LONG") longCount++;
-                        if (m1 === "SHORT") shortCount++;
-                        if (m5 === "SHORT") shortCount++;
+                const m1 = frames["1min"]?.analysis?.signal || "ERROR";
+                const m5 = frames["5min"]?.analysis?.signal || "ERROR";
 
-                        if (!hasSignal && m1 !== "ERROR" && m5 !== "ERROR") {
-                            continue;
-                        }
+                const row = document.createElement("tr");
 
-                        foundPairs++;
+                const pairCell = document.createElement("td");
+                pairCell.textContent = item.pair;
 
-                        const row = document.createElement("tr");
+                const m1Cell = document.createElement("td");
+                m1Cell.textContent = m1;
+                m1Cell.className = m1;
 
-                        const pairCell = document.createElement("td");
-                        pairCell.textContent = item.pair;
+                const m5Cell = document.createElement("td");
+                m5Cell.textContent = m5;
+                m5Cell.className = m5;
 
-                        const m1Cell = document.createElement("td");
-                        m1Cell.textContent = m1;
-                        m1Cell.className = m1;
+                const statusCell = document.createElement("td");
+                statusCell.textContent = item.trade_status || "WAITING";
 
-                        const m5Cell = document.createElement("td");
-                        m5Cell.textContent = m5;
-                        m5Cell.className = m5;
-
-                        const statusCell = document.createElement("td");
-
-                        if (m1 === "ERROR" || m5 === "ERROR") {
-                            statusCell.textContent = "DATA ERROR";
-                            statusCell.className = "ERROR";
-                        } else if (m1 === m5 &&
-                                   ["LONG", "SHORT"].includes(m1)) {
-                            statusCell.textContent = "CONFIRMED";
-                            statusCell.className = m1;
-                        } else {
-                            statusCell.textContent = "SIGNAL FOUND";
-                            statusCell.className = "WAIT";
-                        }
-
-                        row.append(pairCell, m1Cell, m5Cell, statusCell);
-                        tbody.appendChild(row);
-                    }
-
-                    document.getElementById("long").textContent = longCount;
-                    document.getElementById("short").textContent = shortCount;
+                if (item.trade_status === "CONFIRMED LONG") {
+                    statusCell.className = "LONG";
+                } else if (item.trade_status === "CONFIRMED SHORT") {
+                    statusCell.className = "SHORT";
+                } else if (item.trade_status === "DATA ERROR") {
+                    statusCell.className = "ERROR";
+                } else {
+                    statusCell.className = "WAIT";
                 }
 
-                status.textContent = foundPairs > 0
-                    ? "Scan complete. Displayed " + foundPairs + " pairs."
-                    : "Scan complete. No signals or data errors found.";
-
-            } catch (error) {
-                status.textContent = "Scan failed: " + error.message;
-            } finally {
-                button.disabled = false;
+                row.append(pairCell, m1Cell, m5Cell, statusCell);
+                tbody.appendChild(row);
+                scanned++;
             }
+
+            document.getElementById("long").textContent = confirmedLong;
+            document.getElementById("short").textContent = confirmedShort;
+            document.getElementById("waiting").textContent = waiting;
+            document.getElementById("errors").textContent = errors;
         }
-        </script>
+
+        status.textContent =
+            "Scan complete. Scanned " + scanned + " / 28 pairs.";
+
+    } catch (error) {
+        status.textContent = "Scan failed: " + error.message;
+    } finally {
+        button.disabled = false;
+    }
+}
+</script>
     </body>
     </html>
     """
