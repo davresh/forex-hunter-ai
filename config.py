@@ -1,12 +1,11 @@
-
 import os
 
 # =====================================
-# FOREX HUNTER AI 2.0 — CONFIGURATION
+# FOREX HUNTER AI — CONFIGURATION
 # =====================================
 
-APP_NAME = "Forex Hunter AI 2.0"
-APP_VERSION = "2.0.0"
+APP_NAME = "Forex Hunter AI"
+APP_VERSION = "5.0.0"
 
 # API
 LSE_API_KEY = os.getenv("LSE_API_KEY")
@@ -14,7 +13,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # =====================================
-# CURRENCY PAIRS — 21 PAIRS
+# CURRENCY PAIRS
 # =====================================
 
 PAIRS = [
@@ -59,8 +58,6 @@ MIN_CANDLES = 60
 
 CACHE_TTL = 60
 API_CONCURRENCY = 4
-
-# API limit: 60 requests/minute
 MAX_API_REQUESTS_PER_MINUTE = 50
 
 # =====================================
@@ -68,7 +65,8 @@ MAX_API_REQUESTS_PER_MINUTE = 50
 # =====================================
 
 SCAN_INTERVAL_SECONDS = 60
-SCAN_START_DELAY_SECONDS = 10
+START_DELAY_SECONDS = 10
+SCAN_START_DELAY_SECONDS = START_DELAY_SECONDS
 
 SCAN_SEMAPHORE_LIMIT = 1
 
@@ -114,7 +112,8 @@ TELEGRAM_ENABLED = True
 SEND_WAIT_SIGNALS = False
 SEND_ONLY_CONFIRMED_SIGNALS = True
 
-MAX_SIGNAL_HISTORY = 100
+MAX_HISTORY = 100
+MAX_SIGNAL_HISTORY = MAX_HISTORY
 
 # =====================================
 # BACKTESTING
