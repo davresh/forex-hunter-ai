@@ -1,4 +1,5 @@
 from indicators import analyze_market
+from market_data import get_candles
 from fastapi import FastAPI
 from datetime import datetime, timezone
 from indicators import analyze_market
@@ -50,3 +51,22 @@ def pairs():
 def analyze(data: dict):
     candles = data.get("candles", [])
     return analyze_market(candles)
+
+@app.get("/market/{pair:path}")
+async def market(pair: str, interval: str = "1min"):
+    if interval not in ["1min", "5min"]:
+        return {"error": "Use 1min or 5min"}
+
+    candles = await get_candles(pair, interval)
+
+    if isinstance(candles, dict):
+        return candles
+
+    analysis = analyze_market(candles)
+
+    return {
+        "pair": pair,
+        "timeframe": interval,
+        "candles_count": len(candles),
+        "analysis": analysis
+    }
