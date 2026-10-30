@@ -29,7 +29,7 @@ ACTIVE_SIGNALS = {}
 SIGNAL_HISTORY = []
 
 MAX_HISTORY = 100
-SCAN_SEMAPHORE = asyncio.Semaphore(4)
+SCAN_SEMAPHORE = asyncio.Semaphore(1)
 
 
 def now_text():
@@ -146,7 +146,6 @@ async def scan_one_pair(pair):
     async with SCAN_SEMAPHORE:
         started = time.time()
 
-        # Sequential calls reduce API pressure.
         m1 = await analyze_pair(pair, "1min")
         m5 = await analyze_pair(pair, "5min")
 
@@ -302,17 +301,9 @@ async def scan(pair: str):
 async def scan_all():
     results = []
 
-    for start in range(0, len(PAIRS), 4):
-        batch = PAIRS[start:start + 4]
-
-        batch_results = await asyncio.gather(
-            *[
-                scan_one_pair(pair)
-                for pair in batch
-            ]
-        )
-
-        results.extend(batch_results)
+    for pair in PAIRS:
+        result = await scan_one_pair(pair)
+        results.append(result)
 
     return {
         "total": len(results),
@@ -410,7 +401,6 @@ async def dashboard():
             }
 
             h1 { color: #38bdf8; }
-
             .sub { color: #94a3b8; }
 
             .stats {
@@ -684,45 +674,46 @@ async def dashboard():
                 button.disabled = true;
                 scanner.innerHTML = "";
 
+                let completed = 0;
                 let long = 0;
                 let short = 0;
                 let waiting = 0;
                 let errors = 0;
 
+                document.getElementById("long").textContent = "0";
+                document.getElementById("short").textContent = "0";
+                document.getElementById("waiting").textContent = "0";
+                document.getElementById("errors").textContent = "0";
+
+                progress.textContent = "Starting scan...";
+
                 try {
-                    for (let i = 0; i < pairs.length; i += 4) {
-                        const batch = pairs.slice(i, i + 4);
-
+                    for (const pair of pairs) {
                         progress.textContent =
-                            "Scanning " +
-                            Math.min(i + 4, pairs.length) +
-                            " / " + pairs.length + " pairs...";
+                            "Scanning " + pair +
+                            " (" + (completed + 1) +
+                            "/" + pairs.length + ")...";
 
-                        const responses = await Promise.all(
-                            batch.map(async pair => {
-                                const encoded =
-                                    encodeURIComponent(pair);
+                        try {
+                            const response = await fetch(
+                                "/scan/" + encodeURIComponent(pair)
+                            );
 
-                                const response = await fetch(
-                                    "/scan/" + encoded
+                            if (!response.ok) {
+                                throw new Error(
+                                    "HTTP " + response.status
                                 );
+                            }
 
-                                if (!response.ok) {
-                                    throw new Error(
-                                        "HTTP " + response.status
-                                    );
-                                }
+                            const result = await response.json();
 
-                                return await response.json();
-                            })
-                        );
+                            if (result.error) {
+                                throw new Error(result.error);
+                            }
 
-                        responses.forEach(result => {
                             addRow(result);
 
-                            if (
-                                result.status === "CONFIRMED LONG"
-                            ) {
+                            if (result.status === "CONFIRMED LONG") {
                                 long++;
                             } else if (
                                 result.status === "CONFIRMED SHORT"
@@ -735,27 +726,33 @@ async def dashboard():
                             } else {
                                 waiting++;
                             }
-                        });
 
-                        document.getElementById("long").textContent =
-                            long;
+                        } catch (error) {
+                            errors++;
 
-                        document.getElementById("short").textContent =
-                            short;
+                            addRow({
+                                pair: pair,
+                                status: "DATA ERROR",
+                                duration: "—"
+                            });
 
-                        document.getElementById("waiting").textContent =
-                            waiting;
+                            console.error(pair, error);
 
-                        document.getElementById("errors").textContent =
-                            errors;
+                        } finally {
+                            completed++;
+
+                            document.getElementById("long").textContent = long;
+                            document.getElementById("short").textContent = short;
+                            document.getElementById("waiting").textContent = waiting;
+                            document.getElementById("errors").textContent = errors;
+                        }
                     }
 
                     await loadHistory();
 
                     progress.textContent =
-                        "Scan complete: " +
-                        pairs.length + " / " +
-                        pairs.length + " pairs.";
+                        "Scan complete: " + completed +
+                        "/" + pairs.length + " pairs.";
 
                 } catch (error) {
                     progress.textContent =
