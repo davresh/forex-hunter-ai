@@ -70,3 +70,23 @@ async def market(pair: str, interval: str = "1min"):
         "candles_count": len(candles),
         "analysis": analysis
     }
+
+@app.get("/scan/{pair:path}")
+async def scan_pair_endpoint(pair: str):
+    results = {}
+
+    for interval in ["1min", "5min"]:
+        candles = await get_candles(pair, interval)
+
+        if isinstance(candles, dict):
+            results[interval] = candles
+        else:
+            results[interval] = {
+                "candles_count": len(candles),
+                "analysis": analyze_market(candles)
+            }
+
+    return {
+        "pair": pair,
+        "results": results
+    }
