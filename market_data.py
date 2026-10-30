@@ -1,12 +1,13 @@
-import time
 
-CACHE = {}
-CACHE_TTL = 60
 import os
+import time
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
+
+CACHE = {}
+CACHE_TTL = 60
 
 API_KEY = os.getenv("TWELVE_DATA_API_KEY")
 BASE_URL = "https://api.twelvedata.com/time_series"
@@ -19,11 +20,12 @@ async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
 
     if cached and time.time() - cached["time"] < CACHE_TTL:
         return cached["data"]
+
     if not API_KEY:
         return {"error": "API key is missing"}
 
     params = {
-        "symbol": pair.replace("/", "/"),
+        "symbol": pair,
         "interval": interval,
         "outputsize": outputsize,
         "apikey": API_KEY
@@ -48,8 +50,8 @@ async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
         })
 
     CACHE[cache_key] = {
-    "time": time.time(),
-    "data": candles
+        "time": time.time(),
+        "data": candles
     }
 
-return candles
+    return candles
