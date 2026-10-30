@@ -533,8 +533,8 @@ def dashboard():
             document.getElementById("errors").textContent = "0";
 
             try {
-                // 7 batches of 4 pairs = 28 pairs
-                for (let offset = 0; offset < 28; offset += 4) {
+                // 7 batches of 4 pairs = 21 pairs
+                for (let offset = 0; offset < 21; offset += 4) {
                     const limit = 4;
 
                     status.textContent =
