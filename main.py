@@ -1,5 +1,5 @@
+
 import asyncio
-import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -8,7 +8,6 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from telegram import (
-    Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update
@@ -43,17 +42,20 @@ from scanner import scan_pair
 # =========================================================
 
 SCANNING_ENABLED = False
+
 LAST_SENT = {}
 SIGNAL_HISTORY = []
 
-SCAN_SEMAPHORE = asyncio.Semaphore(1)
 TELEGRAM_APP = None
 
 SCAN_STATUS = "Ожидание"
 LAST_SCAN_TIME = None
 
-# Защита от одновременного запуска нескольких полных сканирований.
+# Prevent overlapping full scans and manual scans.
 SCAN_LOCK = asyncio.Lock()
+
+# Prevent simultaneous processing of individual pairs.
+SCAN_SEMAPHORE = asyncio.Semaphore(1)
 
 
 # =========================================================
@@ -67,6 +69,9 @@ def now_text():
 
 
 def is_allowed_chat(chat_id):
+    if not TELEGRAM_CHAT_ID:
+        return False
+
     return str(chat_id) == str(TELEGRAM_CHAT_ID)
 
 
@@ -96,7 +101,17 @@ def telegram_keyboard():
 
 
 def get_signal(result):
-    signal = result.get("signal")
+    """
+    A signal is valid only when Chief Agent explicitly approves it.
+    """
+
+    if not isinstance(result, dict):
+        return "WAIT"
+
+    if result.get("approved") is not True:
+        return "WAIT"
+
+    signal = str(result.get("signal", "")).upper()
 
     if signal in ALLOWED_SIGNALS:
         return signal
@@ -104,11 +119,52 @@ def get_signal(result):
     return "WAIT"
 
 
+def get_agents(result):
+    agents = result.get("agents", {})
+
+    return agents if isinstance(agents, dict) else {}
+
+
+def get_analysis(result):
+    """
+    Extract the M5 technical analysis when available.
+    """
+
+    agents = get_agents(result)
+
+    m5 = agents.get("m5_technical", {})
+
+    if isinstance(m5, dict):
+        analysis = m5.get("analysis")
+
+        if isinstance(analysis, dict):
+            return analysis
+
+    m1 = agents.get("m1_technical", {})
+
+    if isinstance(m1, dict):
+        analysis = m1.get("analysis")
+
+        if isinstance(analysis, dict):
+            return analysis
+
+    return {}
+
+
 def get_score(result):
-    return result.get(
-        "analysis_score",
-        result.get("score", 0)
-    )
+    score = result.get("analysis_score")
+
+    if score is not None:
+        return score
+
+    agents = get_agents(result)
+
+    m5 = agents.get("m5_technical", {})
+
+    if isinstance(m5, dict):
+        return m5.get("score", 0)
+
+    return 0
 
 
 def format_signal_message(pair, result):
@@ -120,8 +176,8 @@ def format_signal_message(pair, result):
         f"📊 Сигнал: {signal}\n"
         f"💰 Вход: {result.get('entry', '—')}\n"
         f"🛑 Stop Loss: {result.get('stop_loss', '—')}\n"
-        f"🎯 Take Profit 1: {result.get('take_profit_1', '—')}\n"
-        f"🎯 Take Profit 2: {result.get('take_profit_2', '—')}\n"
+        f"🎯 Take Profit: {result.get('take_profit', '—')}\n"
+        f"⚖️ Risk/Reward: {result.get('risk_reward', '—')}\n"
         f"⭐ Оценка: {get_score(result)}/100\n"
         f"📈 RSI: {result.get('rsi', '—')}\n"
         f"📊 ADX: {result.get('adx', '—')}\n"
@@ -133,54 +189,125 @@ def format_signal_message(pair, result):
 
 def format_analysis_message(pair, result):
     signal = get_signal(result)
+    analysis = get_analysis(result)
+
+    def value(key):
+        return result.get(key, analysis.get(key, "—"))
 
     lines = [
-        f"🔎 ПОДРОБНЫЙ АНАЛИЗ",
+        "🔎 ПОДРОБНЫЙ АНАЛИЗ",
         "",
         f"💱 Пара: {pair}",
         f"📊 Решение: {signal}",
         f"⭐ Оценка: {get_score(result)}/100",
-        f"📈 RSI: {result.get('rsi', '—')}",
-        f"📊 ADX: {result.get('adx', '—')}",
-        f"💰 Цена: {result.get('price', '—')}",
-        f"📐 EMA 50: {result.get('ema_50', '—')}",
-        f"🌡 ATR: {result.get('atr', '—')}",
+        "",
+        f"💰 Цена: {value('price')}",
+        f"📈 RSI: {value('rsi')}",
+        f"📊 ADX: {value('adx')}",
+        f"📐 EMA 50: {value('ema_50')}",
+        f"🌡 ATR: {value('atr')}",
+        f"📉 Поддержка: {value('support')}",
+        f"📈 Сопротивление: {value('resistance')}",
         "",
         f"🛑 Stop Loss: {result.get('stop_loss', '—')}",
-        f"🎯 Take Profit 1: {result.get('take_profit_1', '—')}",
-        f"🎯 Take Profit 2: {result.get('take_profit_2', '—')}",
+        f"🎯 Take Profit: {result.get('take_profit', '—')}",
+        f"⚖️ Risk/Reward: {result.get('risk_reward', '—')}",
         "",
-        f"🕒 {now_text()}",
-        "",
-        "⚠️ WAIT означает, что условия для сильного сигнала не выполнены."
+        f"📝 Итог: {result.get('reason', 'Нет дополнительной информации')}",
+        f"🕒 {now_text()}"
     ]
 
-    reasons = result.get("reasons", [])
+    reasons = result.get(
+        "reasons",
+        analysis.get("reasons", [])
+    )
 
     if reasons:
-        lines.extend(["", "📋 Причины:"])
+        lines.extend(["", "📋 ТЕХНИЧЕСКИЕ ПРИЧИНЫ"])
 
         if isinstance(reasons, list):
-            lines.extend(f"• {reason}" for reason in reasons[:8])
+            lines.extend(
+                f"• {reason}"
+                for reason in reasons[:8]
+            )
         else:
             lines.append(str(reasons))
 
-    # Дополнительные результаты агентов, если Chief Agent их возвращает.
-    agents = result.get("agents", {})
+    agents = get_agents(result)
 
-    if isinstance(agents, dict) and agents:
+    if agents:
         lines.extend(["", "🤖 РЕЗУЛЬТАТЫ АГЕНТОВ"])
 
         for name, agent_result in agents.items():
-            if isinstance(agent_result, dict):
-                approved = agent_result.get("approved")
-                status = "✅" if approved else "❌"
-                reason = agent_result.get("reason", "")
-                lines.append(f"{status} {name}: {reason}")
-            else:
-                lines.append(f"• {name}: {agent_result}")
+            if not isinstance(agent_result, dict):
+                continue
+
+            if "approved" not in agent_result:
+                continue
+
+            approved = agent_result.get("approved") is True
+            status = "✅" if approved else "❌"
+
+            reason = agent_result.get(
+                "reason",
+                "Результат получен"
+            )
+
+            lines.append(
+                f"{status} {name}: {reason}"
+            )
+
+            events = agent_result.get("events", [])
+
+            if isinstance(events, list):
+                for event in events[:3]:
+                    if isinstance(event, dict):
+                        lines.append(
+                            f"   • {event.get('currency', '')}: "
+                            f"{event.get('title', '')}"
+                        )
+
+    if result.get("error"):
+        lines.extend([
+            "",
+            f"⚠️ Ошибка: {result['error']}"
+        ])
+
+    lines.extend([
+        "",
+        "⚠️ WAIT означает, что все условия "
+        "для подтверждённого сигнала не выполнены."
+    ])
 
     return "\n".join(lines)
+
+
+async def send_long_message(bot, chat_id, message):
+    """
+    Split long Telegram messages without cutting lines.
+    """
+
+    max_length = 3800
+    chunks = []
+    current = ""
+
+    for line in message.splitlines():
+        if len(current) + len(line) + 1 > max_length:
+            if current:
+                chunks.append(current)
+
+            current = line
+        else:
+            current += ("\n" if current else "") + line
+
+    if current:
+        chunks.append(current)
+
+    for chunk in chunks:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=chunk
+        )
 
 
 # =========================================================
@@ -189,42 +316,46 @@ def format_analysis_message(pair, result):
 
 async def send_telegram(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Не настроены данные Telegram.")
+        print("Telegram credentials are not configured.")
         return False
 
-    try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-        async with bot:
-            await bot.send_message(
+    if TELEGRAM_APP is not None:
+        try:
+            await TELEGRAM_APP.bot.send_message(
                 chat_id=TELEGRAM_CHAT_ID,
                 text=message
             )
 
-        return True
+            return True
 
-    except Exception as error:
-        print("Ошибка Telegram:", error)
-        return False
+        except Exception as error:
+            print("Telegram send error:", error)
+            return False
+
+    return False
 
 
 async def telegram_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
-    if not update.effective_chat or not is_allowed_chat(
-        update.effective_chat.id
+    if (
+        not update.effective_chat
+        or not is_allowed_chat(update.effective_chat.id)
     ):
         if update.message:
-            await update.message.reply_text("⛔ Доступ запрещён.")
+            await update.message.reply_text(
+                "⛔ Доступ запрещён."
+            )
         return
 
-    await update.message.reply_text(
-        f"🚀 {APP_NAME}\n\n"
-        "Система готова к работе.\n"
-        "Выберите действие:",
-        reply_markup=telegram_keyboard()
-    )
+    if update.message:
+        await update.message.reply_text(
+            f"🚀 {APP_NAME}\n\n"
+            "Система готова к работе.\n"
+            "Выберите действие:",
+            reply_markup=telegram_keyboard()
+        )
 
 
 async def telegram_status_text():
@@ -241,6 +372,47 @@ async def telegram_status_text():
     )
 
 
+async def telegram_analyze(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    if (
+        not update.effective_chat
+        or not is_allowed_chat(update.effective_chat.id)
+    ):
+        if update.message:
+            await update.message.reply_text(
+                "⛔ Доступ запрещён."
+            )
+        return
+
+    await update.message.reply_text(
+        "🔎 Запускаю анализ всех валютных пар.\n"
+        "Пожалуйста, подожди..."
+    )
+
+    results = await run_full_scan(notify=False)
+
+    if (
+        len(results) == 1
+        and results[0].get("status") == "Сканирование уже выполняется"
+    ):
+        await update.message.reply_text(
+            "⏳ Сканирование уже выполняется. "
+            "Попробуй немного позже."
+        )
+        return
+
+    for result in results:
+        pair = result.get("pair", "?")
+
+        await send_long_message(
+            context.bot,
+            update.effective_chat.id,
+            format_analysis_message(pair, result)
+        )
+
+
 async def telegram_buttons(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
@@ -248,50 +420,69 @@ async def telegram_buttons(
     global SCANNING_ENABLED
 
     query = update.callback_query
+
     await query.answer()
 
-    if not query.message or not is_allowed_chat(
-        query.message.chat_id
+    if (
+        not query.message
+        or not is_allowed_chat(query.message.chat_id)
     ):
-        await query.edit_message_text("⛔ Доступ запрещён.")
+        if query.message:
+            await query.edit_message_text(
+                "⛔ Доступ запрещён."
+            )
         return
 
     if query.data == "start":
         SCANNING_ENABLED = True
-        message = "🟢 Автоматическое сканирование включено."
+
+        message = (
+            "🟢 Автоматическое сканирование включено."
+        )
 
     elif query.data == "stop":
         SCANNING_ENABLED = False
-        message = "🔴 Автоматическое сканирование остановлено."
+
+        message = (
+            "🔴 Автоматическое сканирование остановлено."
+        )
 
     elif query.data == "status":
         message = await telegram_status_text()
 
     elif query.data == "analyze":
         await query.edit_message_text(
-            "🔎 Запускаю подробный анализ всех валютных пар...\n"
-            "Это может занять некоторое время."
+            "🔎 Запускаю анализ всех валютных пар...\n"
+            "Подожди, пожалуйста."
         )
 
         results = await run_full_scan(notify=False)
 
-        lines = ["📊 РЕЗУЛЬТАТЫ АНАЛИЗА", ""]
+        if (
+            len(results) == 1
+            and results[0].get("status")
+            == "Сканирование уже выполняется"
+        ):
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="⏳ Сканирование уже выполняется.",
+                reply_markup=telegram_keyboard()
+            )
+            return
 
-        for item in results:
-            pair = item.get("pair", "?")
-            signal = item.get("signal", "WAIT")
-            score = item.get("analysis_score", 0)
-
-            lines.append(
-                f"{pair}: {signal} | Оценка: {score}/100"
+        for result in results:
+            await send_long_message(
+                context.bot,
+                query.message.chat_id,
+                format_analysis_message(
+                    result.get("pair", "?"),
+                    result
+                )
             )
 
-        text = "\n".join(lines)
-
-        # Telegram ограничивает длину одного сообщения.
         await context.bot.send_message(
             chat_id=query.message.chat_id,
-            text=text[:4000],
+            text="✅ Анализ завершён.",
             reply_markup=telegram_keyboard()
         )
         return
@@ -305,68 +496,9 @@ async def telegram_buttons(
     )
 
 
-async def telegram_analyze(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    if not update.effective_chat or not is_allowed_chat(
-        update.effective_chat.id
-    ):
-        await update.message.reply_text("⛔ Доступ запрещён.")
-        return
-
-    await update.message.reply_text(
-        "🔎 Запускаю подробный анализ. Подожди..."
-    )
-
-    results = await run_full_scan(notify=False)
-
-    lines = ["📊 РЕЗУЛЬТАТЫ АНАЛИЗА", ""]
-
-    for item in results:
-        lines.append(
-            f"{item.get('pair', '?')}: "
-            f"{item.get('signal', 'WAIT')} | "
-            f"{item.get('analysis_score', 0)}/100"
-        )
-
-    await update.message.reply_text(
-        "\n".join(lines)[:4000],
-        reply_markup=telegram_keyboard()
-    )
-
-
 # =========================================================
-# MARKET ANALYSIS
+# SCANNING
 # =========================================================
-
-async def analyze_pair(pair, interval):
-    try:
-        candles = await get_candles(
-            pair,
-            interval,
-            outputsize=100
-        )
-
-        if isinstance(candles, dict) and "error" in candles:
-            return {"error": candles["error"]}
-
-        result = analyze_market(candles)
-
-        if result.get("status") != "success":
-            return {
-                "error": result.get(
-                    "message",
-                    "Ошибка анализа"
-                )
-            }
-
-        return result
-
-    except Exception as error:
-        print(f"Ошибка анализа {pair} {interval}: {error}")
-        return {"error": str(error)}
-
 
 async def scan_one_pair(pair, notify=True):
     global SCAN_STATUS
@@ -376,37 +508,44 @@ async def scan_one_pair(pair, notify=True):
         SCAN_STATUS = f"Анализ {pair}"
 
         try:
-            # scanner.py получает M1/M5 и передаёт их Chief Agent.
             result = await scan_pair(pair)
 
             if not isinstance(result, dict):
                 return {
                     "pair": pair,
+                    "approved": False,
                     "signal": "WAIT",
-                    "status": "ОШИБКА РЕЗУЛЬТАТА"
+                    "status": "Ошибка результата"
                 }
 
+            # Chief Agent approval is mandatory.
             signal = get_signal(result)
-            score = get_score(result)
 
             result["pair"] = pair
             result["signal"] = signal
-            result["analysis_score"] = score
             result["duration"] = round(
                 time.time() - started,
                 2
             )
 
-            if signal not in ALLOWED_SIGNALS:
+            result["analysis_score"] = get_score(result)
+
+            if signal == "WAIT":
                 result["status"] = "ОЖИДАНИЕ"
                 return result
 
             result["status"] = f"ПОДТВЕРЖДЁН {signal}"
 
+            # Send only a new direction for this pair.
             if notify and LAST_SENT.get(pair) != signal:
-                message = format_signal_message(pair, result)
+                message = format_signal_message(
+                    pair,
+                    result
+                )
 
-                if await send_telegram(message):
+                sent = await send_telegram(message)
+
+                if sent:
                     LAST_SENT[pair] = signal
 
             SIGNAL_HISTORY.insert(0, {
@@ -414,8 +553,8 @@ async def scan_one_pair(pair, notify=True):
                 "signal": signal,
                 "entry": result.get("entry"),
                 "stop_loss": result.get("stop_loss"),
-                "take_profit_1": result.get("take_profit_1"),
-                "score": score,
+                "take_profit": result.get("take_profit"),
+                "score": result.get("analysis_score"),
                 "time": now_text()
             })
 
@@ -424,10 +563,13 @@ async def scan_one_pair(pair, notify=True):
             return result
 
         except Exception as error:
-            print(f"Ошибка сканирования {pair}: {error}")
+            print(
+                f"Scanning error for {pair}: {error}"
+            )
 
             return {
                 "pair": pair,
+                "approved": False,
                 "signal": "WAIT",
                 "status": "ОШИБКА",
                 "error": str(error)
@@ -440,6 +582,7 @@ async def run_full_scan(notify=True):
     if SCAN_LOCK.locked():
         return [{
             "pair": "SYSTEM",
+            "approved": False,
             "signal": "WAIT",
             "status": "Сканирование уже выполняется"
         }]
@@ -447,27 +590,48 @@ async def run_full_scan(notify=True):
     async with SCAN_LOCK:
         results = []
 
-        for pair in PAIRS:
-            if not notify and not SCANNING_ENABLED:
-                # Ручной анализ разрешён даже при выключенном
-                # автоматическом сканировании.
-                pass
+        try:
+            for pair in PAIRS:
+                SCAN_STATUS = f"Анализ {pair}"
 
-            SCAN_STATUS = f"Анализ {pair}"
+                result = await scan_one_pair(
+                    pair,
+                    notify=notify
+                )
 
-            result = await scan_one_pair(
-                pair,
-                notify=notify
-            )
+                results.append(result)
 
-            results.append(result)
+                # Small delay between currency pairs.
+                await asyncio.sleep(1)
 
-            await asyncio.sleep(1)
+            return results
 
-        SCAN_STATUS = "Ожидание следующего цикла"
-        LAST_SCAN_TIME = now_text()
+        finally:
+            SCAN_STATUS = "Ожидание следующего цикла"
+            LAST_SCAN_TIME = now_text()
 
-        return results
+
+async def run_single_scan(pair):
+    """
+    Manual single-pair scan shares the same lock
+    as automatic and full scans.
+    """
+
+    if SCAN_LOCK.locked():
+        return {
+            "pair": pair,
+            "approved": False,
+            "signal": "WAIT",
+            "status": "Сканирование уже выполняется"
+        }
+
+    async with SCAN_LOCK:
+        result = await scan_one_pair(
+            pair,
+            notify=False
+        )
+
+        return result
 
 
 # =========================================================
@@ -483,17 +647,25 @@ async def automatic_scan():
         try:
             if SCANNING_ENABLED:
                 print(
-                    "Начало автоматического сканирования:",
+                    "Automatic scan started:",
                     now_text()
                 )
 
                 await run_full_scan(notify=True)
 
+        except asyncio.CancelledError:
+            raise
+
         except Exception as error:
             SCAN_STATUS = "Ошибка автоматического сканирования"
-            print("Ошибка автоматического сканирования:", error)
+            print(
+                "Automatic scanning error:",
+                error
+            )
 
-        await asyncio.sleep(SCAN_INTERVAL_SECONDS)
+        await asyncio.sleep(
+            SCAN_INTERVAL_SECONDS
+        )
 
 
 # =========================================================
@@ -504,7 +676,9 @@ async def automatic_scan():
 async def lifespan(app: FastAPI):
     global TELEGRAM_APP
 
-    scan_task = asyncio.create_task(automatic_scan())
+    scan_task = asyncio.create_task(
+        automatic_scan()
+    )
 
     try:
         if TELEGRAM_BOT_TOKEN:
@@ -515,15 +689,23 @@ async def lifespan(app: FastAPI):
             )
 
             TELEGRAM_APP.add_handler(
-                CommandHandler("start", telegram_start)
+                CommandHandler(
+                    "start",
+                    telegram_start
+                )
             )
 
             TELEGRAM_APP.add_handler(
-                CommandHandler("analyze", telegram_analyze)
+                CommandHandler(
+                    "analyze",
+                    telegram_analyze
+                )
             )
 
             TELEGRAM_APP.add_handler(
-                CallbackQueryHandler(telegram_buttons)
+                CallbackQueryHandler(
+                    telegram_buttons
+                )
             )
 
             await TELEGRAM_APP.initialize()
@@ -548,6 +730,8 @@ async def lifespan(app: FastAPI):
 
             await TELEGRAM_APP.stop()
             await TELEGRAM_APP.shutdown()
+
+            TELEGRAM_APP = None
 
 
 # =========================================================
@@ -597,7 +781,9 @@ async def telegram_test():
         "✅ Подключение Telegram успешно!"
     )
 
-    return {"telegram_sent": sent}
+    return {
+        "telegram_sent": sent
+    }
 
 
 @app.get("/scan/{pair:path}")
@@ -605,14 +791,18 @@ async def scan(pair: str):
     pair = pair.replace("-", "/").upper()
 
     if pair not in PAIRS:
-        return {"error": "Валютная пара не найдена"}
+        return {
+            "error": "Валютная пара не найдена"
+        }
 
-    return await scan_one_pair(pair, notify=False)
+    return await run_single_scan(pair)
 
 
 @app.get("/scan-all")
 async def scan_all():
-    results = await run_full_scan(notify=False)
+    results = await run_full_scan(
+        notify=False
+    )
 
     return {
         "total": len(results),
@@ -651,7 +841,9 @@ async def market(pair: str):
     pair = pair.replace("-", "/").upper()
 
     if pair not in PAIRS:
-        return {"error": "Валютная пара не найдена"}
+        return {
+            "error": "Валютная пара не найдена"
+        }
 
     candles = await get_candles(
         pair,
@@ -720,8 +912,11 @@ async def dashboard():
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1">
+
         <title>Forex Hunter AI</title>
+
         <style>
             body {
                 background: #0b1120;
@@ -729,34 +924,77 @@ async def dashboard():
                 font-family: Arial, sans-serif;
                 padding: 20px;
             }
-            h1 { color: #38bdf8; }
+
+            h1 {
+                color: #38bdf8;
+            }
+
             .card {
                 background: #172033;
                 padding: 18px;
                 border-radius: 10px;
                 margin: 12px 0;
             }
+
+            .online {
+                color: #4ade80;
+            }
+
+            .offline {
+                color: #f87171;
+            }
         </style>
     </head>
+
     <body>
         <h1>Forex Hunter AI</h1>
+
         <div class="card">
             <p>21 валютная пара</p>
             <p>Анализ M1 + M5</p>
-            <p>Технический, стратегический, новостной и риск-анализ</p>
-            <p>Состояние: <strong id="status">Проверка...</strong></p>
-            <p>Последний цикл: <strong id="last">—</strong></p>
+            <p>Технический, стратегический,
+               новостной и риск-анализ</p>
+
+            <p>
+                Состояние:
+                <strong id="status">Проверка...</strong>
+            </p>
+
+            <p>
+                Процесс:
+                <strong id="process">—</strong>
+            </p>
+
+            <p>
+                Последний цикл:
+                <strong id="last">—</strong>
+            </p>
         </div>
 
         <script>
             async function updateStatus() {
                 try {
                     const response = await fetch("/health");
+
+                    if (!response.ok) {
+                        throw new Error("Server error");
+                    }
+
                     const data = await response.json();
 
-                    document.getElementById("status").textContent =
-                        data.scanning ? "СКАНИРОВАНИЕ ВКЛЮЧЕНО" :
-                        "СКАНИРОВАНИЕ ОСТАНОВЛЕНО";
+                    const status =
+                        document.getElementById("status");
+
+                    status.textContent = data.scanning
+                        ? "СКАНИРОВАНИЕ ВКЛЮЧЕНО"
+                        : "СКАНИРОВАНИЕ ОСТАНОВЛЕНО";
+
+                    status.className = data.scanning
+                        ? "online"
+                        : "offline";
+
+                    document.getElementById("process").textContent =
+                        data.scan_status || "—";
 
                     document.getElementById("last").textContent =
                         data.last_scan_time || "Ещё не запускался";
