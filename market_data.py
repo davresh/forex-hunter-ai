@@ -1,6 +1,8 @@
+
 import os
 import time
 import asyncio
+
 from dotenv import load_dotenv
 from lse import LSE
 
@@ -10,8 +12,10 @@ CACHE = {}
 CACHE_TTL = 60
 
 API_KEY = os.getenv("LSE_API_KEY")
-
 client = LSE(api_key=API_KEY) if API_KEY else None
+
+# Ограничиваем одновременные обращения к API.
+API_SEMAPHORE = asyncio.Semaphore(4)
 
 
 async def get_candles(
@@ -39,45 +43,54 @@ async def get_candles(
     if not timeframe:
         return {"error": f"Unsupported interval: {interval}"}
 
-    async def fetch_candles():
-        rows = await asyncio.to_thread(
-            client.candles,
-            pair,
-            timeframe,
-            limit=outputsize,
-            order="asc"
-        )
+    async with API_SEMAPHORE:
+        # Проверяем кэш повторно: другой запрос мог заполнить его,
+        # пока текущий ожидал свободное место.
+        cached = CACHE.get(cache_key)
 
-        if not rows:
-            return {"error": f"No candles returned for {pair}"}
-
-        candles = []
-
-        for item in rows:
-            candles.append({
-                "open": float(item["open"]),
-                "high": float(item["high"]),
-                "low": float(item["low"]),
-                "close": float(item["close"])
-            })
-
-        CACHE[cache_key] = {
-            "time": time.time(),
-            "data": candles
-        }
-
-        return candles
-
-    try:
-        return await fetch_candles()
-
-    except Exception:
-        await asyncio.sleep(2)
+        if cached and time.time() - cached["time"] < CACHE_TTL:
+            return cached["data"]
 
         try:
-            return await fetch_candles()
+            rows = await asyncio.to_thread(
+                client.candles,
+                pair,
+                timeframe,
+                limit=outputsize,
+                order="asc"
+            )
 
-        except Exception as retry_error:
+            if not rows:
+                return {
+                    "error": f"No candles returned for {pair}"
+                }
+
+            candles = []
+
+            for item in rows:
+                candles.append({
+                    "open": float(item["open"]),
+                    "high": float(item["high"]),
+                    "low": float(item["low"]),
+                    "close": float(item["close"])
+                })
+
+            if len(candles) < 60:
+                return {
+                    "error": (
+                        f"Not enough candles for {pair}: "
+                        f"{len(candles)}"
+                    )
+                }
+
+            CACHE[cache_key] = {
+                "time": time.time(),
+                "data": candles
+            }
+
+            return candles
+
+        except Exception as error:
             return {
-                "error": f"{pair}: {str(retry_error)}"
+                "error": f"{pair} {interval}: {str(error)}"
             }
