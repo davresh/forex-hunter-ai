@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from datetime import datetime, timezone
+from indicators import analyze_market
 
 app = FastAPI(
     title="Forex Hunter AI",
@@ -43,3 +44,8 @@ def pairs():
         "timeframes": ["M1", "M5"],
         "pairs": PAIRS
     }
+    
+@app.post("/analyze")
+def analyze(data: dict):
+    candles = data.get("candles", [])
+    return analyze_market(candles)
