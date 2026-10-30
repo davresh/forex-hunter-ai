@@ -371,20 +371,27 @@ def dashboard():
             </p>
 
             <div class="stats">
-                <div class="card">
-                    Currency Pairs
-                    <div class="number" id="total">28</div>
-                </div>
-                <div class="card">
-                    LONG Signals
-                    <div class="number" id="long">0</div>
-                </div>
-                <div class="card">
-                    SHORT Signals
-                    <div class="number" id="short">0</div>
-                </div>
-            </div>
-
+    <div class="card">
+        Currency Pairs
+        <div class="number" id="total">28</div>
+    </div>
+    <div class="card">
+        Confirmed LONG
+        <div class="number" id="long">0</div>
+    </div>
+    <div class="card">
+        Confirmed SHORT
+        <div class="number" id="short">0</div>
+    </div>
+    <div class="card">
+        Waiting
+        <div class="number" id="waiting">0</div>
+    </div>
+    <div class="card">
+        Data Errors
+        <div class="number" id="errors">0</div>
+    </div>
+</div>
             <button id="scanButton" onclick="startScan()">
                 Scan All Pairs
             </button>
