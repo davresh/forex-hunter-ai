@@ -47,4 +47,9 @@ async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
             "close": float(item["close"])
         })
 
-    return candles
+    CACHE[cache_key] = {
+    "time": time.time(),
+    "data": candles
+    }
+
+return candles
