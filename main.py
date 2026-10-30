@@ -279,29 +279,30 @@ async def scan_all(offset: int = 0, limit: int = 2):
     }
 
 
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     return """
     <!DOCTYPE html>
-    <html lang="ru">
+    <html lang="en">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport"
-              content="width=device-width, initial-scale=1">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Forex Hunter AI</title>
+
         <style>
             * { box-sizing: border-box; }
 
             body {
                 margin: 0;
-                padding: 25px;
+                padding: 24px;
                 background: #0b1120;
                 color: #e5e7eb;
                 font-family: Arial, sans-serif;
             }
 
             .container {
-                max-width: 1100px;
+                max-width: 1150px;
                 margin: auto;
             }
 
@@ -311,18 +312,19 @@ def dashboard():
             .stats {
                 display: grid;
                 grid-template-columns: repeat(5, 1fr);
-                gap: 15px;
+                gap: 12px;
                 margin: 25px 0;
             }
 
             .card {
                 background: #172033;
-                padding: 20px;
+                padding: 18px;
                 border-radius: 12px;
+                border: 1px solid #293449;
             }
 
             .number {
-                font-size: 28px;
+                font-size: 27px;
                 font-weight: bold;
                 margin-top: 10px;
             }
@@ -331,13 +333,48 @@ def dashboard():
                 background: #2563eb;
                 color: white;
                 border: 0;
-                padding: 12px 18px;
+                padding: 13px 20px;
                 border-radius: 8px;
                 cursor: pointer;
+                font-size: 15px;
                 margin: 5px 5px 15px 0;
             }
 
             button:hover { background: #1d4ed8; }
+
+            button:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+
+            .time-grid {
+                display: grid;
+                grid-template-columns: repeat(3, 1fr);
+                gap: 12px;
+                margin: 15px 0 25px;
+            }
+
+            #status {
+                color: #38bdf8;
+                margin: 15px 0;
+            }
+
+            .progress {
+                width: 100%;
+                height: 10px;
+                background: #293449;
+                border-radius: 10px;
+                overflow: hidden;
+                margin: 12px 0 22px;
+            }
+
+            .progress-bar {
+                width: 0%;
+                height: 100%;
+                background: #22c55e;
+                transition: width 0.2s;
+            }
+
             .table-wrap { overflow-x: auto; }
 
             table {
@@ -349,60 +386,96 @@ def dashboard():
             }
 
             th, td {
-                padding: 14px;
+                padding: 13px;
                 text-align: left;
                 border-bottom: 1px solid #293449;
                 white-space: nowrap;
             }
 
             th { color: #94a3b8; }
+
             .LONG { color: #22c55e; font-weight: bold; }
             .SHORT { color: #ef4444; font-weight: bold; }
             .WAIT { color: #facc15; font-weight: bold; }
             .ERROR { color: #f97316; font-weight: bold; }
 
-            #status { color: #94a3b8; margin: 15px 0; }
+            @media(max-width: 850px) {
+                .stats { grid-template-columns: repeat(2, 1fr); }
+            }
 
             @media(max-width: 600px) {
                 body { padding: 12px; }
-                .stats{ grid-template-columns: repeat(2, 1fr); }
+                .time-grid { grid-template-columns: 1fr; }
+                th, td { padding: 10px; font-size: 13px; }
             }
         </style>
     </head>
+
     <body>
         <div class="container">
+
             <h1>FOREX HUNTER AI</h1>
             <p class="subtitle">
                 Market Scanner | Simulation Mode
             </p>
 
             <div class="stats">
-    <div class="card">
-        Currency Pairs
-        <div class="number" id="total">28</div>
-    </div>
-    <div class="card">
-        Confirmed LONG
-        <div class="number" id="long">0</div>
-    </div>
-    <div class="card">
-        Confirmed SHORT
-        <div class="number" id="short">0</div>
-    </div>
-    <div class="card">
-        Waiting
-        <div class="number" id="waiting">0</div>
-    </div>
-    <div class="card">
-        Data Errors
-        <div class="number" id="errors">0</div>
-    </div>
-</div>
+                <div class="card">
+                    Currency Pairs
+                    <div class="number" id="total">28</div>
+                </div>
+
+                <div class="card">
+                    Confirmed LONG
+                    <div class="number LONG" id="long">0</div>
+                </div>
+
+                <div class="card">
+                    Confirmed SHORT
+                    <div class="number SHORT" id="short">0</div>
+                </div>
+
+                <div class="card">
+                    Waiting
+                    <div class="number WAIT" id="waiting">0</div>
+                </div>
+
+                <div class="card">
+                    Data Errors
+                    <div class="number ERROR" id="errors">0</div>
+                </div>
+            </div>
+
             <button id="scanButton" onclick="startScan()">
                 Scan All Pairs
             </button>
 
             <div id="status">Ready to scan</div>
+
+            <div class="progress">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+
+            <div class="time-grid">
+                <div class="card">
+                    Scan started
+                    <div class="number" id="scanStarted">—</div>
+                </div>
+
+                <div class="card">
+                    Scan finished
+                    <div class="number" id="scanFinished">—</div>
+                </div>
+
+                <div class="card">
+                    Scan duration
+                    <div class="number" id="scanDuration">—</div>
+                </div>
+            </div>
+
+            <p class="subtitle" id="lastUpdated">
+                Last updated: —
+            </p>
 
             <div class="table-wrap">
                 <table>
@@ -417,100 +490,151 @@ def dashboard():
                     <tbody id="results"></tbody>
                 </table>
             </div>
+
         </div>
 
         <script>
-async function startScan() {
-    const tbody = document.getElementById("results");
-    const status = document.getElementById("status");
-    const button = document.getElementById("scanButton");
+        async function startScan() {
+            const tbody = document.getElementById("results");
+            const status = document.getElementById("status");
+            const button = document.getElementById("scanButton");
+            const progress = document.getElementById("progressBar");
 
-    button.disabled = true;
-    tbody.innerHTML = "";
+            const startedAt = new Date();
+            const timer = performance.now();
 
-    let confirmedLong = 0;
-    let confirmedShort = 0;
-    let waiting = 0;
-    let errors = 0;
-    let scanned = 0;
+            button.disabled = true;
+            tbody.innerHTML = "";
+            progress.style.width = "0%";
 
-    try {
-        for (let offset = 0; offset < 28; offset += 2) {
-            status.textContent =
-                "Scanning " + Math.min(offset + 2, 28) + " / 28...";
+            document.getElementById("scanStarted").textContent =
+                startedAt.toLocaleString();
 
-            const response = await fetch(
-                "/scan-all?offset=" + offset + "&limit=2"
-            );
+            document.getElementById("scanFinished").textContent =
+                "Scanning...";
 
-            if (!response.ok) {
-                throw new Error("Server error: " + response.status);
-            }
+            document.getElementById("scanDuration").textContent = "—";
+            document.getElementById("lastUpdated").textContent =
+                "Scanning in progress...";
 
-            const data = await response.json();
+            let confirmedLong = 0;
+            let confirmedShort = 0;
+            let waiting = 0;
+            let errors = 0;
+            let scanned = 0;
 
-            if (!data.results || !data.summary) {
-                throw new Error(data.error || "Invalid response");
-            }
+            document.getElementById("long").textContent = "0";
+            document.getElementById("short").textContent = "0";
+            document.getElementById("waiting").textContent = "0";
+            document.getElementById("errors").textContent = "0";
 
-            confirmedLong += data.summary.confirmed_long;
-            confirmedShort += data.summary.confirmed_short;
-            waiting += data.summary.waiting;
-            errors += data.summary.data_errors;
+            try {
+                // 7 batches of 4 pairs = 28 pairs
+                for (let offset = 0; offset < 28; offset += 4) {
+                    const limit = 4;
 
-            for (const item of data.results) {
-                const frames = item.timeframes || {};
+                    status.textContent =
+                        "Scanning " + Math.min(offset + 4, 28) + " / 28 pairs...";
 
-                const m1 = frames["1min"]?.analysis?.signal || "ERROR";
-                const m5 = frames["5min"]?.analysis?.signal || "ERROR";
+                    const response = await fetch(
+                        "/scan-all?offset=" + offset + "&limit=" + limit
+                    );
 
-                const row = document.createElement("tr");
+                    if (!response.ok) {
+                        throw new Error("Server error: " + response.status);
+                    }
 
-                const pairCell = document.createElement("td");
-                pairCell.textContent = item.pair;
+                    const data = await response.json();
 
-                const m1Cell = document.createElement("td");
-                m1Cell.textContent = m1;
-                m1Cell.className = m1;
+                    if (!data.results || !data.summary) {
+                        throw new Error(data.error || "Invalid server response");
+                    }
 
-                const m5Cell = document.createElement("td");
-                m5Cell.textContent = m5;
-                m5Cell.className = m5;
+                    confirmedLong += Number(data.summary.confirmed_long || 0);
+                    confirmedShort += Number(data.summary.confirmed_short || 0);
+                    waiting += Number(data.summary.waiting || 0);
+                    errors += Number(data.summary.data_errors || 0);
 
-                const statusCell = document.createElement("td");
-                statusCell.textContent = item.trade_status || "WAITING";
+                    for (const item of data.results) {
+                        const frames = item.timeframes || {};
 
-                if (item.trade_status === "CONFIRMED LONG") {
-                    statusCell.className = "LONG";
-                } else if (item.trade_status === "CONFIRMED SHORT") {
-                    statusCell.className = "SHORT";
-                } else if (item.trade_status === "DATA ERROR") {
-                    statusCell.className = "ERROR";
-                } else {
-                    statusCell.className = "WAIT";
+                        const m1Data = frames["1min"] || {};
+                        const m5Data = frames["5min"] || {};
+
+                        const m1 = m1Data.analysis?.signal || "ERROR";
+                        const m5 = m5Data.analysis?.signal || "ERROR";
+
+                        const row = document.createElement("tr");
+
+                        const pairCell = document.createElement("td");
+                        pairCell.textContent = item.pair;
+
+                        const m1Cell = document.createElement("td");
+                        m1Cell.textContent = m1;
+                        m1Cell.className = m1;
+
+                        const m5Cell = document.createElement("td");
+                        m5Cell.textContent = m5;
+                        m5Cell.className = m5;
+
+                        const statusCell = document.createElement("td");
+                        statusCell.textContent =
+                            item.trade_status || "WAITING";
+
+                        if (item.trade_status === "CONFIRMED LONG") {
+                            statusCell.className = "LONG";
+                        } else if (item.trade_status === "CONFIRMED SHORT") {
+                            statusCell.className = "SHORT";
+                        } else if (item.trade_status === "DATA ERROR") {
+                            statusCell.className = "ERROR";
+                        } else {
+                            statusCell.className = "WAIT";
+                        }
+
+                        row.append(
+                            pairCell,
+                            m1Cell,
+                            m5Cell,
+                            statusCell
+                        );
+
+                        tbody.appendChild(row);
+                        scanned++;
+                    }
+
+                    document.getElementById("long").textContent = confirmedLong;
+                    document.getElementById("short").textContent = confirmedShort;
+                    document.getElementById("waiting").textContent = waiting;
+                    document.getElementById("errors").textContent = errors;
+
+                    progress.style.width = (scanned / 28 * 100) + "%";
                 }
 
-                row.append(pairCell, m1Cell, m5Cell, statusCell);
-                tbody.appendChild(row);
-                scanned++;
+                status.textContent =
+                    "Scan complete. Scanned " + scanned + " / 28 pairs.";
+
+            } catch (error) {
+                status.textContent = "Scan failed: " + error.message;
+
+            } finally {
+                const finishedAt = new Date();
+                const duration = (
+                    (performance.now() - timer) / 1000
+                ).toFixed(1);
+
+                document.getElementById("scanFinished").textContent =
+                    finishedAt.toLocaleString();
+
+                document.getElementById("scanDuration").textContent =
+                    duration + " seconds";
+
+                document.getElementById("lastUpdated").textContent =
+                    "Last updated: " + finishedAt.toLocaleString();
+
+                button.disabled = false;
             }
-
-            document.getElementById("long").textContent = confirmedLong;
-            document.getElementById("short").textContent = confirmedShort;
-            document.getElementById("waiting").textContent = waiting;
-            document.getElementById("errors").textContent = errors;
         }
-
-        status.textContent =
-            "Scan complete. Scanned " + scanned + " / 28 pairs.";
-
-    } catch (error) {
-        status.textContent = "Scan failed: " + error.message;
-    } finally {
-        button.disabled = false;
-    }
-}
-</script>
+        </script>
     </body>
     </html>
     """
