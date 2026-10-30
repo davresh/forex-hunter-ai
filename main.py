@@ -82,14 +82,12 @@ async def maybe_send_trade_signal(pair: str, m1, m5):
 
 PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD", "NZD/USD",
+    "AUD/USD", "USD/CAD",
     "EUR/GBP", "EUR/JPY", "EUR/CHF", "EUR/AUD",
-    "EUR/CAD", "EUR/NZD",
+    "EUR/CAD",
     "GBP/JPY", "GBP/CHF", "GBP/AUD", "GBP/CAD",
-    "GBP/NZD",
-    "AUD/JPY", "AUD/CHF", "AUD/CAD", "AUD/NZD",
+    "AUD/JPY", "AUD/CHF", "AUD/CAD",
     "CAD/JPY", "CAD/CHF",
-    "NZD/JPY", "NZD/CHF", "NZD/CAD",
     "CHF/JPY"
 ]
 
