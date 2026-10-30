@@ -70,4 +70,40 @@ async def get_candles(
         return candles
 
     except Exception as error:
-        return {"error": str(error)}
+    await asyncio.sleep(2)
+
+    try:
+        rows = await asyncio.to_thread(
+            client.candles,
+            pair,
+            timeframe,
+            limit=outputsize,
+            order="asc"
+        )
+
+        if not rows:
+            return {
+                "error": f"No market data for {pair}"
+            }
+
+        candles = []
+
+        for item in rows:
+            candles.append({
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"])
+            })
+
+        CACHE[cache_key] = {
+            "time": time.time(),
+            "data": candles
+        }
+
+        return candles
+
+    except Exception as retry_error:
+        return {
+            "error": f"{pair}: {str(retry_error)}"
+        }
