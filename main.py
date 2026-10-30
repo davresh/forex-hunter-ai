@@ -323,8 +323,24 @@ async function startScan() {
                 m5Cell.textContent = m5;
                 m5Cell.className = m5;
 
-                row.append(pairCell, m1Cell, m5Cell);
-                tbody.appendChild(row);
+                const statusCell = document.createElement("td");
+
+if (m1 === "ERROR" || m5 === "ERROR") {
+    statusCell.textContent = "DATA ERROR";
+    statusCell.className = "ERROR";
+} else if (
+    ["LONG", "SHORT"].includes(m1) ||
+    ["LONG", "SHORT"].includes(m5)
+) {
+    statusCell.textContent = "SIGNAL FOUND";
+    statusCell.className = "LONG";
+} else {
+    statusCell.textContent = "WAIT";
+    statusCell.className = "WAIT";
+}
+
+row.append(pairCell, m1Cell, m5Cell, statusCell);
+tbody.appendChild(row);
             }
 
             document.getElementById("long").textContent = longCount;
