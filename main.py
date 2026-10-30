@@ -304,7 +304,7 @@ def dashboard():
 
             .stats {
                 display: grid;
-                grid-template-columns: repeat(3, 1fr);
+                grid-template-columns: repeat(5, 1fr);
                 gap: 15px;
                 margin: 25px 0;
             }
@@ -359,7 +359,7 @@ def dashboard():
 
             @media(max-width: 600px) {
                 body { padding: 12px; }
-                .stats { grid-template-columns: 1fr; }
+                .stats{ grid-template-columns: repeat(2, 1fr); }
             }
         </style>
     </head>
