@@ -41,6 +41,7 @@ MAX_HISTORY = 100
 
 SCAN_SEMAPHORE = asyncio.Semaphore(1)
 TELEGRAM_APP = None
+SCAN_STATUS = "Ожидание"
 
 
 def now_text():
@@ -52,13 +53,13 @@ def now_text():
 def telegram_keyboard():
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("▶ СТАРТ", callback_data="start"),
+            InlineKeyboardButton("⏹ СТОП", callback_data="stop")
+        ],
+        [
             InlineKeyboardButton(
-                "▶ START",
-                callback_data="start"
-            ),
-            InlineKeyboardButton(
-                "■ STOP",
-                callback_data="stop"
+                "☁️ СТАТУС RENDER",
+                callback_data="status"
             )
         ]
     ])
@@ -69,7 +70,7 @@ async def send_telegram(message):
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
     if not token or not chat_id:
-        print("Telegram credentials missing")
+        print("Не настроены данные Telegram")
         return False
 
     try:
@@ -84,7 +85,7 @@ async def send_telegram(message):
         return True
 
     except Exception as error:
-        print("Telegram error:", error)
+        print("Ошибка Telegram:", error)
         return False
 
 
@@ -93,15 +94,15 @@ async def telegram_start(
     context: ContextTypes.DEFAULT_TYPE
 ):
     allowed_chat = os.getenv("TELEGRAM_CHAT_ID")
-    chat_id = update.effective_chat.id
 
-    if str(chat_id) != str(allowed_chat):
-        await update.message.reply_text("Access denied.")
+    if str(update.effective_chat.id) != str(allowed_chat):
+        await update.message.reply_text("⛔ Доступ запрещён.")
         return
 
     await update.message.reply_text(
         "🚀 FOREX HUNTER AI\n\n"
-        "Choose an action:",
+        "Добро пожаловать!\n"
+        "Выберите действие:",
         reply_markup=telegram_keyboard()
     )
 
@@ -118,16 +119,28 @@ async def telegram_buttons(
     allowed_chat = os.getenv("TELEGRAM_CHAT_ID")
 
     if str(query.message.chat_id) != str(allowed_chat):
-        await query.edit_message_text("Access denied.")
+        await query.edit_message_text("⛔ Доступ запрещён.")
         return
 
     if query.data == "start":
         SCANNING_ENABLED = True
-        message = "🟢 Scanning started!"
+        message = "🟢 Сканирование запущено!"
 
     elif query.data == "stop":
         SCANNING_ENABLED = False
-        message = "🔴 Scanning stopped!"
+        message = "🔴 Сканирование остановлено!"
+
+    elif query.data == "status":
+        message = (
+            "☁️ СТАТУС FOREX HUNTER AI\n\n"
+            "🟢 Render: ПРИЛОЖЕНИЕ ОТВЕЧАЕТ\n"
+            f"📡 Сканирование: "
+            f"{'ВКЛЮЧЕНО 🟢' if SCANNING_ENABLED else 'ОСТАНОВЛЕНО 🔴'}\n"
+            f"🔄 Текущий процесс: {SCAN_STATUS}\n"
+            f"💱 Валютных пар: {len(PAIRS)}\n"
+            "📊 Таймфреймы: M1 + M5\n"
+            f"🕒 Время: {now_text()}"
+        )
 
     else:
         return
@@ -155,7 +168,7 @@ async def analyze_pair(pair, interval):
             return {
                 "error": result.get(
                     "message",
-                    "Analysis failed"
+                    "Ошибка анализа"
                 )
             }
 
@@ -166,8 +179,11 @@ async def analyze_pair(pair, interval):
 
 
 async def scan_one_pair(pair):
+    global SCAN_STATUS
+
     async with SCAN_SEMAPHORE:
         started = time.time()
+        SCAN_STATUS = f"Анализ {pair}"
 
         m1 = await analyze_pair(pair, "1min")
         m5 = await analyze_pair(pair, "5min")
@@ -175,7 +191,7 @@ async def scan_one_pair(pair):
         if "error" in m1 or "error" in m5:
             return {
                 "pair": pair,
-                "status": "DATA ERROR",
+                "status": "ОШИБКА ДАННЫХ",
                 "m1": m1,
                 "m5": m5
             }
@@ -191,7 +207,7 @@ async def scan_one_pair(pair):
 
             return {
                 "pair": pair,
-                "status": "WAITING",
+                "status": "ОЖИДАНИЕ",
                 "m1": m1,
                 "m5": m5
             }
@@ -209,17 +225,18 @@ async def scan_one_pair(pair):
         if LAST_SENT.get(pair) != signal1:
             message = (
                 "🚀 FOREX HUNTER AI\n\n"
-                f"💱 Pair: {pair}\n"
-                f"📊 Signal: {signal1}\n"
-                f"💰 Entry: {result.get('entry')}\n"
-                f"🛑 Stop Loss: {result.get('stop_loss')}\n"
-                f"🎯 TP1: {result.get('take_profit_1')}\n"
-                f"🎯 TP2: {result.get('take_profit_2')}\n"
-                f"⭐ Score: {result.get('analysis_score')}/100\n"
+                f"💱 Валютная пара: {pair}\n"
+                f"📊 Сигнал: {signal1}\n"
+                f"💰 Вход: {result.get('entry')}\n"
+                f"🛑 Стоп-лосс: {result.get('stop_loss')}\n"
+                f"🎯 Тейк-профит 1: {result.get('take_profit_1')}\n"
+                f"🎯 Тейк-профит 2: {result.get('take_profit_2')}\n"
+                f"⭐ Оценка: {result.get('analysis_score')}/100\n"
                 f"📈 RSI: {result.get('rsi')}\n"
                 f"📊 ADX: {result.get('adx')}\n"
-                f"⏰ {now_text()}\n\n"
-                "SIMULATION ONLY. NOT FINANCIAL ADVICE."
+                f"🕒 Время: {now_text()}\n\n"
+                "⚠️ Только аналитический сигнал. "
+                "Не финансовая рекомендация."
             )
 
             if await send_telegram(message):
@@ -239,7 +256,7 @@ async def scan_one_pair(pair):
 
         return {
             "pair": pair,
-            "status": f"CONFIRMED {signal1}",
+            "status": f"ПОДТВЕРЖДЁН {signal1}",
             "m1": m1,
             "m5": m5,
             "combined": result,
@@ -248,11 +265,13 @@ async def scan_one_pair(pair):
 
 
 async def automatic_scan():
+    global SCAN_STATUS
+
     await asyncio.sleep(10)
 
     while True:
         if SCANNING_ENABLED:
-            print("AUTOMATIC SCAN STARTED:", now_text())
+            print("Начало автоматического сканирования:", now_text())
 
             for pair in PAIRS:
                 if not SCANNING_ENABLED:
@@ -263,9 +282,13 @@ async def automatic_scan():
                     print(pair, result.get("status"))
 
                 except Exception as error:
-                    print("Scan error:", pair, error)
+                    print("Ошибка сканирования:", pair, error)
 
-            print("AUTOMATIC SCAN FINISHED:", now_text())
+            SCAN_STATUS = (
+                "Сканирование остановлено"
+                if not SCANNING_ENABLED
+                else "Ожидание следующего цикла"
+            )
 
         await asyncio.sleep(60)
 
@@ -275,7 +298,6 @@ async def lifespan(app: FastAPI):
     global TELEGRAM_APP
 
     scan_task = asyncio.create_task(automatic_scan())
-
     token = os.getenv("TELEGRAM_BOT_TOKEN")
 
     try:
@@ -335,7 +357,8 @@ async def health():
     return {
         "status": "ok",
         "time": now_text(),
-        "scanning": SCANNING_ENABLED
+        "scanning": SCANNING_ENABLED,
+        "scan_status": SCAN_STATUS
     }
 
 
@@ -351,7 +374,7 @@ async def get_pairs():
 async def telegram_test():
     sent = await send_telegram(
         "🚀 FOREX HUNTER AI\n\n"
-        "✅ Telegram connection successful!"
+        "✅ Подключение Telegram успешно!"
     )
 
     return {"telegram_sent": sent}
@@ -362,7 +385,7 @@ async def scan(pair: str):
     pair = pair.replace("-", "/").upper()
 
     if pair not in PAIRS:
-        return {"error": "Pair not found"}
+        return {"error": "Валютная пара не найдена"}
 
     return await scan_one_pair(pair)
 
@@ -399,6 +422,7 @@ async def dashboard_data():
     return {
         "pairs": len(PAIRS),
         "scanning": SCANNING_ENABLED,
+        "scan_status": SCAN_STATUS,
         "history": SIGNAL_HISTORY,
         "time": now_text()
     }
@@ -409,7 +433,7 @@ async def market(pair: str):
     pair = pair.replace("-", "/").upper()
 
     if pair not in PAIRS:
-        return {"error": "Pair not found"}
+        return {"error": "Валютная пара не найдена"}
 
     candles = await get_candles(
         pair,
@@ -437,13 +461,13 @@ async def backtest_endpoint(
     if pair not in PAIRS:
         return {
             "status": "error",
-            "message": "Pair not found"
+            "message": "Валютная пара не найдена"
         }
 
     if interval not in ("1min", "5min"):
         return {
             "status": "error",
-            "message": "Invalid interval"
+            "message": "Интервал должен быть 1min или 5min"
         }
 
     candles = await get_candles(
@@ -475,49 +499,50 @@ async def backtest_endpoint(
 async def dashboard():
     return """
     <!DOCTYPE html>
-    <html>
+    <html lang="ru">
     <head>
+        <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Forex Hunter AI</title>
         <style>
             body {
                 background: #0b1120;
                 color: white;
-                font-family: Arial;
-                padding: 25px;
+                font-family: Arial, sans-serif;
+                padding: 20px;
             }
             h1 { color: #38bdf8; }
             .card {
                 background: #172033;
-                padding: 20px;
+                padding: 18px;
                 border-radius: 10px;
-                margin-top: 15px;
+                margin: 12px 0;
             }
         </style>
     </head>
     <body>
         <h1>Forex Hunter AI 4.0</h1>
         <div class="card">
-            <p>21 Forex pairs</p>
-            <p>M1 + M5 analysis</p>
-            <p>Telegram START / STOP controls</p>
-            <p>Open Telegram and send /start to your bot.</p>
-            <p>Automatic scanning status:
-                <strong id="status">Loading...</strong>
-            </p>
+            <p>21 валютная пара</p>
+            <p>Анализ M1 + M5</p>
+            <p>Управление через Telegram</p>
+            <p>Состояние: <strong id="status">Проверка...</strong></p>
         </div>
         <script>
             async function updateStatus() {
                 try {
                     const response = await fetch("/health");
                     const data = await response.json();
+
                     document.getElementById("status").textContent =
-                        data.scanning ? "RUNNING" : "STOPPED";
+                        data.scanning ? "СКАНИРОВАНИЕ ВКЛЮЧЕНО" :
+                        "СКАНИРОВАНИЕ ОСТАНОВЛЕНО";
                 } catch (error) {
                     document.getElementById("status").textContent =
-                        "Unavailable";
+                        "СЕРВЕР НЕДОСТУПЕН";
                 }
             }
+
             updateStatus();
             setInterval(updateStatus, 10000);
         </script>
