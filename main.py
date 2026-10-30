@@ -478,4 +478,3 @@ def dashboard():
     </body>
     </html>
     """
-```
