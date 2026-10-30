@@ -10,6 +10,7 @@ from telegram import Bot
 
 from indicators import analyze_market
 from market_data import get_candles
+from backtesting import run_backtest
 
 
 app = FastAPI(title="Forex Hunter AI 4.0")
@@ -26,8 +27,8 @@ PAIRS = [
 LAST_SENT_SIGNALS = {}
 ACTIVE_SIGNALS = {}
 SIGNAL_HISTORY = []
-MAX_HISTORY = 100
 
+MAX_HISTORY = 100
 SCAN_SEMAPHORE = asyncio.Semaphore(4)
 
 
@@ -46,12 +47,15 @@ async def send_telegram_message(message):
 
     try:
         bot = Bot(token=token)
+
         async with bot:
             await bot.send_message(
                 chat_id=chat_id,
                 text=message
             )
+
         return True
+
     except Exception as error:
         print("Telegram error:", error)
         return False
@@ -60,7 +64,7 @@ async def send_telegram_message(message):
 def record_signal(pair, result):
     item = {
         "pair": pair,
-        "signal": result.get("signal", "WAIT"),
+        "signal": result.get("signal"),
         "entry": result.get("entry"),
         "stop_loss": result.get("stop_loss"),
         "take_profit_1": result.get("take_profit_1"),
@@ -85,12 +89,11 @@ async def maybe_send_trade_signal(pair, result):
 
     ACTIVE_SIGNALS[pair] = result
 
-    # Уведомляем только один раз для непрерывного сигнала.
     if LAST_SENT_SIGNALS.get(pair) == signal:
         return
 
     message = (
-        f"Forex Hunter AI 4.0\n\n"
+        "Forex Hunter AI 4.0\n\n"
         f"Pair: {pair}\n"
         f"Signal: {signal}\n"
         f"Entry: {result.get('entry')}\n"
@@ -100,7 +103,7 @@ async def maybe_send_trade_signal(pair, result):
         f"Analysis score: {result.get('analysis_score')}/100\n"
         f"RSI: {result.get('rsi')}\n"
         f"ADX: {result.get('adx')}\n\n"
-        f"Simulation only. Not financial advice."
+        "SIMULATION ONLY. NOT FINANCIAL ADVICE."
     )
 
     sent = await send_telegram_message(message)
@@ -125,7 +128,8 @@ async def analyze_pair(pair, interval):
         if analysis.get("status") != "success":
             return {
                 "error": analysis.get(
-                    "message", "Analysis unavailable"
+                    "message",
+                    "Analysis unavailable"
                 )
             }
 
@@ -142,8 +146,7 @@ async def scan_one_pair(pair):
     async with SCAN_SEMAPHORE:
         started = time.time()
 
-        # Получаем M1 и M5 последовательно,
-        # чтобы не создавать лишнюю нагрузку на API.
+        # Sequential calls reduce API pressure.
         m1 = await analyze_pair(pair, "1min")
         m5 = await analyze_pair(pair, "5min")
 
@@ -164,18 +167,29 @@ async def scan_one_pair(pair):
         signal1 = a1["signal"]
         signal5 = a5["signal"]
 
-        if signal1 == signal5 and signal1 in ("LONG", "SHORT"):
-            # M5 levels are used for the combined signal.
+        if (
+            signal1 == signal5
+            and signal1 in ("LONG", "SHORT")
+        ):
             combined = dict(a5)
+
             combined["signal"] = signal1
+
             combined["analysis_score"] = round(
-                (a1["analysis_score"] + a5["analysis_score"]) / 2
+                (
+                    a1["analysis_score"]
+                    + a5["analysis_score"]
+                ) / 2
             )
 
             status = f"CONFIRMED {signal1}"
 
             record_signal(pair, combined)
-            await maybe_send_trade_signal(pair, combined)
+
+            await maybe_send_trade_signal(
+                pair,
+                combined
+            )
 
         else:
             combined = {
@@ -184,6 +198,7 @@ async def scan_one_pair(pair):
             }
 
             status = "WAITING"
+
             ACTIVE_SIGNALS.pop(pair, None)
             LAST_SENT_SIGNALS.pop(pair, None)
 
@@ -217,13 +232,16 @@ async def health():
 
 @app.get("/pairs")
 async def get_pairs():
-    return {"pairs": PAIRS, "total": len(PAIRS)}
+    return {
+        "pairs": PAIRS,
+        "total": len(PAIRS)
+    }
 
 
 @app.get("/telegram-test")
 async def telegram_test():
     sent = await send_telegram_message(
-        "Forex Hunter AI 4.0: Telegram connection test successful."
+        "Forex Hunter AI 4.0: Telegram test successful."
     )
 
     return {"telegram_sent": sent}
@@ -234,8 +252,9 @@ async def analyze_endpoint():
     results = []
 
     for pair in PAIRS:
-        result = await scan_one_pair(pair)
-        results.append(result)
+        results.append(
+            await scan_one_pair(pair)
+        )
 
     return {
         "total": len(results),
@@ -247,8 +266,13 @@ async def analyze_endpoint():
 async def market(pair: str):
     pair = pair.replace("-", "/").upper()
 
+    if pair not in PAIRS:
+        return {"error": "Pair not found"}
+
     candles = await get_candles(
-        pair, "1min", outputsize=100
+        pair,
+        "1min",
+        outputsize=100
     )
 
     if isinstance(candles, dict) and "error" in candles:
@@ -266,7 +290,10 @@ async def scan(pair: str):
     pair = pair.replace("-", "/").upper()
 
     if pair not in PAIRS:
-        return {"error": "Pair not found", "pair": pair}
+        return {
+            "error": "Pair not found",
+            "pair": pair
+        }
 
     return await scan_one_pair(pair)
 
@@ -275,12 +302,14 @@ async def scan(pair: str):
 async def scan_all():
     results = []
 
-    # Keep batches small to respect the provider rate limit.
     for start in range(0, len(PAIRS), 4):
         batch = PAIRS[start:start + 4]
 
         batch_results = await asyncio.gather(
-            *(scan_one_pair(pair) for pair in batch)
+            *[
+                scan_one_pair(pair)
+                for pair in batch
+            ]
         )
 
         results.extend(batch_results)
@@ -302,6 +331,61 @@ async def signal_history():
     }
 
 
+@app.get("/dashboard-data")
+async def dashboard_data():
+    return {
+        "pairs": len(PAIRS),
+        "active_signals": ACTIVE_SIGNALS,
+        "history": SIGNAL_HISTORY,
+        "time": now_text()
+    }
+
+
+@app.get("/backtest/{pair:path}")
+async def backtest_endpoint(
+    pair: str,
+    interval: str = "1min"
+):
+    pair = pair.replace("-", "/").upper()
+
+    if pair not in PAIRS:
+        return {
+            "status": "error",
+            "message": "Pair not found",
+            "pair": pair
+        }
+
+    if interval not in ("1min", "5min"):
+        return {
+            "status": "error",
+            "message": "Interval must be 1min or 5min"
+        }
+
+    candles = await get_candles(
+        pair,
+        interval,
+        outputsize=100
+    )
+
+    if isinstance(candles, dict) and "error" in candles:
+        return {
+            "status": "error",
+            "message": candles["error"]
+        }
+
+    result = run_backtest(
+        candles,
+        initial_balance=10000,
+        risk_percent=1.0,
+        reward_risk=2.0
+    )
+
+    result["pair"] = pair
+    result["interval"] = interval
+
+    return result
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     return """
@@ -311,9 +395,12 @@ async def dashboard():
         <meta charset="UTF-8">
         <meta name="viewport"
               content="width=device-width, initial-scale=1">
+
         <title>Forex Hunter AI 4.0</title>
+
         <style>
             * { box-sizing: border-box; }
+
             body {
                 margin: 0;
                 padding: 20px;
@@ -321,8 +408,11 @@ async def dashboard():
                 color: #e5e7eb;
                 font-family: Arial, sans-serif;
             }
+
             h1 { color: #38bdf8; }
+
             .sub { color: #94a3b8; }
+
             .stats {
                 display: grid;
                 grid-template-columns:
@@ -330,16 +420,19 @@ async def dashboard():
                 gap: 12px;
                 margin: 20px 0;
             }
+
             .card {
                 background: #172033;
                 padding: 16px;
                 border-radius: 10px;
             }
+
             .number {
                 font-size: 26px;
                 font-weight: bold;
                 margin-top: 8px;
             }
+
             button {
                 background: #0284c7;
                 border: 0;
@@ -348,43 +441,52 @@ async def dashboard():
                 border-radius: 7px;
                 cursor: pointer;
             }
+
             button:disabled {
                 opacity: .5;
                 cursor: wait;
             }
+
             .table-wrap {
                 overflow-x: auto;
                 margin-top: 16px;
             }
+
             table {
                 width: 100%;
                 border-collapse: collapse;
                 min-width: 850px;
                 background: #172033;
             }
+
             th, td {
                 padding: 11px;
                 border-bottom: 1px solid #334155;
                 text-align: left;
                 font-size: 13px;
             }
+
             th { color: #94a3b8; }
+
             .LONG { color: #4ade80; }
             .SHORT { color: #fb7185; }
             .WAITING { color: #facc15; }
             .error { color: #f87171; }
+
             #progress {
                 margin: 15px 0;
                 color: #94a3b8;
             }
+
             .section { margin-top: 30px; }
         </style>
     </head>
+
     <body>
         <h1>Forex Hunter AI 4.0</h1>
+
         <div class="sub">
-            Institutional-style Forex analysis |
-            Simulation only
+            Advanced Forex Analysis | Simulation Only
         </div>
 
         <div class="stats">
@@ -392,18 +494,22 @@ async def dashboard():
                 Currency pairs
                 <div class="number" id="total">21</div>
             </div>
+
             <div class="card">
                 Confirmed LONG
                 <div class="number LONG" id="long">0</div>
             </div>
+
             <div class="card">
                 Confirmed SHORT
                 <div class="number SHORT" id="short">0</div>
             </div>
+
             <div class="card">
                 Waiting
                 <div class="number" id="waiting">0</div>
             </div>
+
             <div class="card">
                 Data errors
                 <div class="number error" id="errors">0</div>
@@ -418,6 +524,7 @@ async def dashboard():
 
         <div class="section">
             <h2>Market Scanner</h2>
+
             <div class="table-wrap">
                 <table>
                     <thead>
@@ -433,6 +540,7 @@ async def dashboard():
                             <th>Seconds</th>
                         </tr>
                     </thead>
+
                     <tbody id="scanner"></tbody>
                 </table>
             </div>
@@ -440,6 +548,7 @@ async def dashboard():
 
         <div class="section">
             <h2>Signal History</h2>
+
             <div class="table-wrap">
                 <table>
                     <thead>
@@ -453,6 +562,7 @@ async def dashboard():
                             <th>Time</th>
                         </tr>
                     </thead>
+
                     <tbody id="history"></tbody>
                 </table>
             </div>
@@ -468,10 +578,17 @@ async def dashboard():
                 "CHF/JPY"
             ];
 
-            const scanner = document.getElementById("scanner");
-            const historyBody = document.getElementById("history");
-            const button = document.getElementById("scanButton");
-            const progress = document.getElementById("progress");
+            const scanner =
+                document.getElementById("scanner");
+
+            const historyBody =
+                document.getElementById("history");
+
+            const button =
+                document.getElementById("scanButton");
+
+            const progress =
+                document.getElementById("progress");
 
             function cell(value) {
                 return value === null || value === undefined
@@ -479,12 +596,14 @@ async def dashboard():
             }
 
             function addRow(result) {
-                const m1 = result.m1?.analysis?.signal || "ERROR";
-                const m5 = result.m5?.analysis?.signal || "ERROR";
+                const m1 =
+                    result.m1?.analysis?.signal || "ERROR";
+
+                const m5 =
+                    result.m5?.analysis?.signal || "ERROR";
+
                 const combined = result.combined || {};
                 const signal = result.status || "WAITING";
-
-                const row = document.createElement("tr");
 
                 const values = [
                     result.pair,
@@ -498,15 +617,22 @@ async def dashboard():
                     cell(result.duration)
                 ];
 
+                const row = document.createElement("tr");
+
                 values.forEach((value, index) => {
                     const td = document.createElement("td");
                     td.textContent = value;
 
                     if (index === 3) {
-                        if (signal.includes("LONG")) td.className = "LONG";
-                        else if (signal.includes("SHORT")) td.className = "SHORT";
-                        else if (signal === "DATA ERROR") td.className = "error";
-                        else td.className = "WAITING";
+                        if (signal.includes("LONG")) {
+                            td.className = "LONG";
+                        } else if (signal.includes("SHORT")) {
+                            td.className = "SHORT";
+                        } else if (signal === "DATA ERROR") {
+                            td.className = "error";
+                        } else {
+                            td.className = "WAITING";
+                        }
                     }
 
                     row.appendChild(td);
@@ -517,13 +643,16 @@ async def dashboard():
 
             async function loadHistory() {
                 try {
-                    const response = await fetch("/signal-history");
+                    const response =
+                        await fetch("/signal-history");
+
                     const data = await response.json();
 
                     historyBody.innerHTML = "";
 
                     data.signals.forEach(item => {
-                        const row = document.createElement("tr");
+                        const row =
+                            document.createElement("tr");
 
                         [
                             item.pair,
@@ -534,13 +663,16 @@ async def dashboard():
                             cell(item.score),
                             item.time
                         ].forEach(value => {
-                            const td = document.createElement("td");
+                            const td =
+                                document.createElement("td");
+
                             td.textContent = value;
                             row.appendChild(td);
                         });
 
                         historyBody.appendChild(row);
                     });
+
                 } catch (error) {
                     console.error(error);
                 }
@@ -562,16 +694,23 @@ async def dashboard():
                         const batch = pairs.slice(i, i + 4);
 
                         progress.textContent =
-                            "Scanning " + Math.min(i + 4, pairs.length) +
+                            "Scanning " +
+                            Math.min(i + 4, pairs.length) +
                             " / " + pairs.length + " pairs...";
 
                         const responses = await Promise.all(
                             batch.map(async pair => {
-                                const encoded = encodeURIComponent(pair);
-                                const response = await fetch("/scan/" + encoded);
+                                const encoded =
+                                    encodeURIComponent(pair);
+
+                                const response = await fetch(
+                                    "/scan/" + encoded
+                                );
 
                                 if (!response.ok) {
-                                    throw new Error("HTTP " + response.status);
+                                    throw new Error(
+                                        "HTTP " + response.status
+                                    );
                                 }
 
                                 return await response.json();
@@ -581,25 +720,47 @@ async def dashboard():
                         responses.forEach(result => {
                             addRow(result);
 
-                            if (result.status === "CONFIRMED LONG") long++;
-                            else if (result.status === "CONFIRMED SHORT") short++;
-                            else if (result.status === "DATA ERROR") errors++;
-                            else waiting++;
+                            if (
+                                result.status === "CONFIRMED LONG"
+                            ) {
+                                long++;
+                            } else if (
+                                result.status === "CONFIRMED SHORT"
+                            ) {
+                                short++;
+                            } else if (
+                                result.status === "DATA ERROR"
+                            ) {
+                                errors++;
+                            } else {
+                                waiting++;
+                            }
                         });
 
-                        document.getElementById("long").textContent = long;
-                        document.getElementById("short").textContent = short;
-                        document.getElementById("waiting").textContent = waiting;
-                        document.getElementById("errors").textContent = errors;
+                        document.getElementById("long").textContent =
+                            long;
+
+                        document.getElementById("short").textContent =
+                            short;
+
+                        document.getElementById("waiting").textContent =
+                            waiting;
+
+                        document.getElementById("errors").textContent =
+                            errors;
                     }
 
                     await loadHistory();
 
                     progress.textContent =
-                        "Scan complete: " + pairs.length + " / " +
+                        "Scan complete: " +
+                        pairs.length + " / " +
                         pairs.length + " pairs.";
+
                 } catch (error) {
-                    progress.textContent = "Scan error: " + error.message;
+                    progress.textContent =
+                        "Scan error: " + error.message;
+
                 } finally {
                     button.disabled = false;
                 }
@@ -610,13 +771,3 @@ async def dashboard():
     </body>
     </html>
     """
-
-
-@app.get("/dashboard-data")
-async def dashboard_data():
-    return {
-        "pairs": len(PAIRS),
-        "active_signals": ACTIVE_SIGNALS,
-        "history": SIGNAL_HISTORY,
-        "time": now_text()
-    }
