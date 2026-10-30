@@ -1,19 +1,25 @@
 
 import os
 import time
-import httpx
+import asyncio
 from dotenv import load_dotenv
+from lse import LSE
 
 load_dotenv()
 
 CACHE = {}
 CACHE_TTL = 60
 
-API_KEY = os.getenv("TWELVE_DATA_API_KEY")
-BASE_URL = "https://api.twelvedata.com/time_series"
+API_KEY = os.getenv("LSE_API_KEY")
+
+client = LSE(api_key=API_KEY) if API_KEY else None
 
 
-async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
+async def get_candles(
+    pair: str,
+    interval: str = "1min",
+    outputsize: int = 100
+):
     cache_key = (pair, interval, outputsize)
 
     cached = CACHE.get(cache_key)
@@ -21,37 +27,47 @@ async def get_candles(pair: str, interval: str = "1min", outputsize: int = 100):
     if cached and time.time() - cached["time"] < CACHE_TTL:
         return cached["data"]
 
-    if not API_KEY:
-        return {"error": "API key is missing"}
+    if not client:
+        return {"error": "LSE_API_KEY is missing"}
 
-    params = {
-        "symbol": pair,
-        "interval": interval,
-        "outputsize": outputsize,
-        "apikey": API_KEY
+    timeframe_map = {
+        "1min": "1m",
+        "5min": "5m"
     }
 
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.get(BASE_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
+    timeframe = timeframe_map.get(interval)
 
-    if "values" not in data:
-        return {"error": data.get("message", "Market data unavailable")}
+    if not timeframe:
+        return {"error": f"Unsupported interval: {interval}"}
 
-    candles = []
+    try:
+        rows = await asyncio.to_thread(
+            client.candles,
+            pair,
+            timeframe,
+            limit=outputsize,
+            order="asc"
+        )
 
-    for item in reversed(data["values"]):
-        candles.append({
-            "open": float(item["open"]),
-            "high": float(item["high"]),
-            "low": float(item["low"]),
-            "close": float(item["close"])
-        })
+        if not rows:
+            return {"error": f"No candles returned for {pair}"}
 
-    CACHE[cache_key] = {
-        "time": time.time(),
-        "data": candles
-    }
+        candles = []
 
-    return candles
+        for item in rows:
+            candles.append({
+                "open": float(item["open"]),
+                "high": float(item["high"]),
+                "low": float(item["low"]),
+                "close": float(item["close"])
+            })
+
+        CACHE[cache_key] = {
+            "time": time.time(),
+            "data": candles
+        }
+
+        return candles
+
+    except Exception as error:
+        return {"error": str(error)}
