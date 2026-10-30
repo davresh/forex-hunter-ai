@@ -16,6 +16,33 @@ app = FastAPI(
     version="1.0.0"
 )
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+telegram_bot = (
+    Bot(token=TELEGRAM_BOT_TOKEN)
+    if TELEGRAM_BOT_TOKEN
+    else None
+)
+
+async def send_telegram_message(message: str):
+    if not telegram_bot:
+        return {"error": "Telegram bot token is missing"}
+
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not chat_id:
+        return {"error": "Telegram chat ID is missing"}
+
+    try:
+        await telegram_bot.send_message(
+            chat_id=chat_id,
+            text=message
+        )
+        return {"success": True}
+
+    except Exception as e:
+        return {"error": str(e)}
+
 PAIRS = [
     "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
     "AUD/USD", "USD/CAD", "NZD/USD",
@@ -37,6 +64,13 @@ def home():
         "mode": "simulation",
         "message": "Forex Hunter AI is running!"
     }
+
+@app.get("/telegram-test")
+async def telegram_test():
+    result = await send_telegram_message(
+        "🚀 FOREX HUNTER AI\n\nTelegram connection successful!\nSimulation Mode"
+    )
+    return result
 
 @app.get("/health")
 def health():
