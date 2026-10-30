@@ -208,28 +208,33 @@ async def scan_all(offset: int = 0, limit: int = 2):
             "timeframes": {}
         }
 
-        for interval in ("1min", "5min"):
+        # Проверяем M1 и M5 одновременно
+        async def fetch_timeframe(interval):
             try:
                 candles = await get_candles(pair, interval)
 
                 if isinstance(candles, dict):
-                    pair_result["timeframes"][interval] = candles
-                else:
-                    analysis = analyze_market(candles)
+                    return interval, candles
 
-                    pair_result["timeframes"][interval] = {
-                        "candles_count": len(candles),
-                        "analysis": analysis
-                    }
+                return interval, {
+                    "candles_count": len(candles),
+                    "analysis": analyze_market(candles)
+                }
 
             except Exception as error:
-                pair_result["timeframes"][interval] = {
+                return interval, {
                     "error": str(error)
                 }
 
-            await asyncio.sleep(1)
+        timeframe_results = await asyncio.gather(
+            fetch_timeframe("1min"),
+            fetch_timeframe("5min")
+        )
+
+        pair_result["timeframes"] = dict(timeframe_results)
 
         frames = pair_result["timeframes"]
+
         m1_data = frames.get("1min", {})
         m5_data = frames.get("5min", {})
 
@@ -258,6 +263,7 @@ async def scan_all(offset: int = 0, limit: int = 2):
             pair_result["trade_status"] = "WAITING"
 
         await maybe_send_trade_signal(pair, m1, m5)
+
         results.append(pair_result)
 
     next_offset = offset + len(selected_pairs)
