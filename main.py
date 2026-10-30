@@ -1,3 +1,4 @@
+from indicators import analyze_market
 from fastapi import FastAPI
 from datetime import datetime, timezone
 from indicators import analyze_market
