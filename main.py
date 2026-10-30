@@ -186,29 +186,20 @@ async def scan_pair_endpoint(pair: str):
 
 
 @app.get("/scan-all")
-async def scan_all(offset: int = 0, limit: int = 2):
+async def scan_all(offset: int = 0, limit: int = 4):
     if limit < 1 or limit > 4 or offset < 0:
         return {
             "error": "Use limit from 1 to 4 and offset from 0"
         }
 
     selected_pairs = PAIRS[offset:offset + limit]
-    results = []
 
-    summary = {
-        "confirmed_long": 0,
-        "confirmed_short": 0,
-        "waiting": 0,
-        "data_errors": 0
-    }
-
-    for pair in selected_pairs:
+    async def scan_pair(pair):
         pair_result = {
             "pair": pair,
             "timeframes": {}
         }
 
-        # Проверяем M1 и M5 одновременно
         async def fetch_timeframe(interval):
             try:
                 candles = await get_candles(pair, interval)
@@ -234,7 +225,6 @@ async def scan_all(offset: int = 0, limit: int = 2):
         pair_result["timeframes"] = dict(timeframe_results)
 
         frames = pair_result["timeframes"]
-
         m1_data = frames.get("1min", {})
         m5_data = frames.get("5min", {})
 
@@ -247,24 +237,40 @@ async def scan_all(offset: int = 0, limit: int = 2):
         )
 
         if has_error:
-            summary["data_errors"] += 1
             pair_result["trade_status"] = "DATA ERROR"
 
         elif m1 == m5 == "LONG":
-            summary["confirmed_long"] += 1
             pair_result["trade_status"] = "CONFIRMED LONG"
 
         elif m1 == m5 == "SHORT":
-            summary["confirmed_short"] += 1
             pair_result["trade_status"] = "CONFIRMED SHORT"
 
         else:
-            summary["waiting"] += 1
             pair_result["trade_status"] = "WAITING"
 
         await maybe_send_trade_signal(pair, m1, m5)
 
-        results.append(pair_result)
+        return pair_result
+
+    # Проверяем до 4 валютных пар одновременно
+    results = await asyncio.gather(
+        *(scan_pair(pair) for pair in selected_pairs)
+    )
+
+    summary = {
+        "confirmed_long": sum(
+            r["trade_status"] == "CONFIRMED LONG" for r in results
+        ),
+        "confirmed_short": sum(
+            r["trade_status"] == "CONFIRMED SHORT" for r in results
+        ),
+        "waiting": sum(
+            r["trade_status"] == "WAITING" for r in results
+        ),
+        "data_errors": sum(
+            r["trade_status"] == "DATA ERROR" for r in results
+        )
+    }
 
     next_offset = offset + len(selected_pairs)
 
