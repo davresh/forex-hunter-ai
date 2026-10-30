@@ -1,10 +1,14 @@
 import asyncio
-from indicators import analyze_market
-from market_data import get_candles
+import os
+
+from datetime import datetime, timezone
+
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
-from datetime import datetime, timezone
+from telegram import Bot
+
 from indicators import analyze_market
+from market_data import get_candles
 
 app = FastAPI(
     title="Forex Hunter AI",
