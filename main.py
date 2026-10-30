@@ -7,6 +7,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
+PAIRS = [
+    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
+    "AUD/USD", "USD/CAD", "NZD/USD",
+    "EUR/GBP", "EUR/JPY", "EUR/CHF", "EUR/AUD",
+    "EUR/CAD", "EUR/NZD",
+    "GBP/JPY", "GBP/CHF", "GBP/AUD", "GBP/CAD",
+    "GBP/NZD",
+    "AUD/JPY", "AUD/CHF", "AUD/CAD", "AUD/NZD",
+    "CAD/JPY", "CAD/CHF",
+    "NZD/JPY", "NZD/CHF", "NZD/CAD",
+    "CHF/JPY"
+]
+
 @app.get("/")
 def home():
     return {
@@ -26,8 +39,7 @@ def health():
 @app.get("/pairs")
 def pairs():
     return {
-        "pairs": [
-            "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-            "AUD/USD", "USD/CAD", "NZD/USD"
-        ]
+        "total": len(PAIRS),
+        "timeframes": ["M1", "M5"],
+        "pairs": PAIRS
     }
