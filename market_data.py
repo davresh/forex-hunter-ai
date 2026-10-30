@@ -1,4 +1,4 @@
-
+```python
 import os
 import time
 import asyncio
@@ -40,7 +40,7 @@ async def get_candles(
     if not timeframe:
         return {"error": f"Unsupported interval: {interval}"}
 
-    try:
+    async def fetch_candles():
         rows = await asyncio.to_thread(
             client.candles,
             pair,
@@ -69,41 +69,17 @@ async def get_candles(
 
         return candles
 
-    except Exception as error:
-    await asyncio.sleep(2)
-
     try:
-        rows = await asyncio.to_thread(
-            client.candles,
-            pair,
-            timeframe,
-            limit=outputsize,
-            order="asc"
-        )
+        return await fetch_candles()
 
-        if not rows:
+    except Exception:
+        await asyncio.sleep(2)
+
+        try:
+            return await fetch_candles()
+
+        except Exception as retry_error:
             return {
-                "error": f"No market data for {pair}"
+                "error": f"{pair}: {str(retry_error)}"
             }
-
-        candles = []
-
-        for item in rows:
-            candles.append({
-                "open": float(item["open"]),
-                "high": float(item["high"]),
-                "low": float(item["low"]),
-                "close": float(item["close"])
-            })
-
-        CACHE[cache_key] = {
-            "time": time.time(),
-            "data": candles
-        }
-
-        return candles
-
-    except Exception as retry_error:
-        return {
-            "error": f"{pair}: {str(retry_error)}"
-        }
+```
