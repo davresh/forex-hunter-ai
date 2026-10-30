@@ -267,57 +267,79 @@ def dashboard():
         </div>
 
         <script>
-            async function startScan() {
-                const tbody = document.getElementById("results");
-                const status = document.getElementById("status");
+            
+async function startScan() {
+    const tbody = document.getElementById("results");
+    const status = document.getElementById("status");
 
-                tbody.innerHTML = "";
-                let longCount = 0;
-                let shortCount = 0;
+    tbody.innerHTML = "";
+    let longCount = 0;
+    let shortCount = 0;
+    let foundPairs = 0;
 
-                for (let offset = 0; offset < 28; offset += 2) {
-                    status.textContent =
-                        "Scanning " + Math.min(offset + 2, 28) + " / 28...";
+    for (let offset = 0; offset < 28; offset += 2) {
+        status.textContent =
+            "Scanning " + Math.min(offset + 2, 28) + " / 28...";
 
-                    const response = await fetch(
-                        "/scan-all?offset=" + offset + "&limit=2"
-                    );
+        try {
+            const response = await fetch(
+                "/scan-all?offset=" + offset + "&limit=2"
+            );
 
-                    const data = await response.json();
+            const data = await response.json();
 
-                    for (const item of data.results) {
-                        const m1 = item.timeframes["1min"]?.analysis?.signal || "ERROR";
-                        const m5 = item.timeframes["5min"]?.analysis?.signal || "ERROR";
-
-                        if (m1 === "LONG") longCount++;
-                        if (m5 === "LONG") longCount++;
-                        if (m1 === "SHORT") shortCount++;
-                        if (m5 === "SHORT") shortCount++;
-
-                        const row = document.createElement("tr");
-
-                        const pairCell = document.createElement("td");
-                        pairCell.textContent = item.pair;
-
-                        const m1Cell = document.createElement("td");
-                        m1Cell.textContent = m1;
-                        m1Cell.className = m1;
-
-                        const m5Cell = document.createElement("td");
-                        m5Cell.textContent = m5;
-                        m5Cell.className = m5;
-
-                        row.append(pairCell, m1Cell, m5Cell);
-                        tbody.appendChild(row);
-                    }
-
-                    document.getElementById("long").textContent = longCount;
-                    document.getElementById("short").textContent = shortCount;
-                }
-
-                status.textContent = "Scan completed!";
+            if (!response.ok || !data.results) {
+                continue;
             }
-        </script>
+
+            for (const item of data.results) {
+                const m1 = item.timeframes["1min"]?.analysis?.signal || "ERROR";
+                const m5 = item.timeframes["5min"]?.analysis?.signal || "ERROR";
+
+                // Показываем только пары с LONG или SHORT
+                const hasSignal = ["LONG", "SHORT"].includes(m1) ||
+                                  ["LONG", "SHORT"].includes(m5);
+
+                if (!hasSignal) continue;
+
+                foundPairs++;
+
+                if (m1 === "LONG") longCount++;
+                if (m5 === "LONG") longCount++;
+                if (m1 === "SHORT") shortCount++;
+                if (m5 === "SHORT") shortCount++;
+
+                const row = document.createElement("tr");
+
+                const pairCell = document.createElement("td");
+                pairCell.textContent = item.pair;
+
+                const m1Cell = document.createElement("td");
+                m1Cell.textContent = m1;
+                m1Cell.className = m1;
+
+                const m5Cell = document.createElement("td");
+                m5Cell.textContent = m5;
+                m5Cell.className = m5;
+
+                row.append(pairCell, m1Cell, m5Cell);
+                tbody.appendChild(row);
+            }
+
+            document.getElementById("long").textContent = longCount;
+            document.getElementById("short").textContent = shortCount;
+
+        } catch (error) {
+            console.error(error);
+        }
+    }
+
+    status.textContent = foundPairs > 0
+        ? "Found " + foundPairs + " pairs with trading signals."
+        : "No trading signals found.";
+}
+        
+    </script>
     </body>
     </html>
     """
