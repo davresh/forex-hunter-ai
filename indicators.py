@@ -1,424 +1,428 @@
 
+import logging
 import pandas as pd
+import numpy as np
 
-from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator, MACD, ADXIndicator
-from ta.volatility import AverageTrueRange, BollingerBands
+logger = logging.getLogger(__name__)
+
+# =====================================
+# FOREX HUNTER AI 5.0
+# TECHNICAL INDICATORS
+# =====================================
+
+MIN_CANDLES = 200
+MIN_SIGNAL_SCORE = 70
+
+
+def error_result(message):
+    return {
+        "signal": "WAIT",
+        "score": 0,
+        "analysis_score": 0,
+        "confidence": 0,
+        "error": message
+    }
 
 
 def analyze_market(candles):
     """
-    Forex Hunter AI — Institutional Analyst
+    Analyze Forex market using technical indicators.
 
-    Анализирует:
-    - EMA 9 / 21 / 50
-    - RSI
-    - MACD
-    - ADX
-    - ATR
-    - Bollinger Bands
-    - Свечную структуру
-    - Поддержку и сопротивление
+    Signals:
+        LONG  - bullish setup
+        SHORT - bearish setup
+        WAIT  - insufficient confirmation
 
-    Возвращает LONG, SHORT или WAIT.
-    Это аналитический сигнал, а не гарантия прибыли.
+    This module is for analysis and simulation only.
     """
 
-    if not isinstance(candles, list) or len(candles) < 60:
-        return {
-            "status": "insufficient_data",
-            "signal": "WAIT",
-            "message": "Need at least 60 candles",
-            "confidence": 0
-        }
-
     try:
+        if not isinstance(candles, list):
+            return error_result("Invalid candle data")
+
+        if len(candles) < MIN_CANDLES:
+            return error_result(
+                f"Need at least {MIN_CANDLES} candles"
+            )
+
         df = pd.DataFrame(candles)
 
         required = ["open", "high", "low", "close"]
 
-        if any(column not in df.columns for column in required):
-            return {
-                "status": "error",
-                "signal": "WAIT",
-                "message": "Missing OHLC candle data",
-                "confidence": 0
-            }
+        if not all(column in df.columns for column in required):
+            return error_result("Missing OHLC columns")
 
         for column in required:
             df[column] = pd.to_numeric(
-                df[column], errors="coerce"
+                df[column],
+                errors="coerce"
             )
 
+        df = df.replace([np.inf, -np.inf], np.nan)
         df = df.dropna(subset=required).reset_index(drop=True)
 
-        if len(df) < 60:
-            return {
-                "status": "insufficient_data",
-                "signal": "WAIT",
-                "message": "Not enough valid candles",
-                "confidence": 0
-            }
+        if len(df) < MIN_CANDLES:
+            return error_result("Not enough valid candles")
 
-        if (df["high"] < df["low"]).any():
-            raise ValueError("Invalid candle: high is below low")
+        if (df[required] <= 0).any().any():
+            return error_result("Invalid price values")
 
-        if (df["close"] <= 0).any():
-            raise ValueError("Invalid candle close price")
+        if (
+            (df["high"] < df["low"]).any()
+            or (df["high"] < df[["open", "close"]].max(axis=1)).any()
+            or (df["low"] > df[["open", "close"]].min(axis=1)).any()
+        ):
+            return error_result("Invalid OHLC candle structure")
 
-        close = df["close"]
-        high = df["high"]
-        low = df["low"]
+        # =====================================
+        # EMA
+        # =====================================
 
-        # -------------------------
-        # 1. TECHNICAL INDICATORS
-        # -------------------------
+        df["ema9"] = df["close"].ewm(
+            span=9, adjust=False
+        ).mean()
 
-        df["ema_9"] = EMAIndicator(
-            close=close, window=9
-        ).ema_indicator()
+        df["ema21"] = df["close"].ewm(
+            span=21, adjust=False
+        ).mean()
 
-        df["ema_21"] = EMAIndicator(
-            close=close, window=21
-        ).ema_indicator()
+        df["ema50"] = df["close"].ewm(
+            span=50, adjust=False
+        ).mean()
 
-        df["ema_50"] = EMAIndicator(
-            close=close, window=50
-        ).ema_indicator()
+        df["ema200"] = df["close"].ewm(
+            span=200, adjust=False
+        ).mean()
 
-        df["rsi"] = RSIIndicator(
-            close=close, window=14
-        ).rsi()
+        # =====================================
+        # RSI
+        # =====================================
 
-        macd = MACD(close=close)
+        delta = df["close"].diff()
 
-        df["macd"] = macd.macd()
-        df["macd_signal"] = macd.macd_signal()
-        df["macd_hist"] = macd.macd_diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
 
-        adx = ADXIndicator(
-            high=high,
-            low=low,
-            close=close,
-            window=14
+        avg_gain = gain.ewm(
+            alpha=1 / 14,
+            adjust=False,
+            min_periods=14
+        ).mean()
+
+        avg_loss = loss.ewm(
+            alpha=1 / 14,
+            adjust=False,
+            min_periods=14
+        ).mean()
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+
+        df["rsi"] = 100 - (100 / (1 + rs))
+
+        df.loc[
+            (avg_loss == 0) & (avg_gain > 0),
+            "rsi"
+        ] = 100
+
+        df.loc[
+            (avg_gain == 0) & (avg_loss > 0),
+            "rsi"
+        ] = 0
+
+        # =====================================
+        # MACD
+        # =====================================
+
+        ema12 = df["close"].ewm(
+            span=12,
+            adjust=False
+        ).mean()
+
+        ema26 = df["close"].ewm(
+            span=26,
+            adjust=False
+        ).mean()
+
+        df["macd"] = ema12 - ema26
+
+        df["macd_signal"] = df["macd"].ewm(
+            span=9,
+            adjust=False
+        ).mean()
+
+        df["macd_hist"] = (
+            df["macd"] - df["macd_signal"]
         )
 
-        df["adx"] = adx.adx()
-        df["plus_di"] = adx.adx_pos()
-        df["minus_di"] = adx.adx_neg()
+        # =====================================
+        # ATR
+        # =====================================
 
-        atr = AverageTrueRange(
-            high=high,
-            low=low,
-            close=close,
-            window=14
+        previous_close = df["close"].shift(1)
+
+        tr = pd.concat(
+            [
+                df["high"] - df["low"],
+                (df["high"] - previous_close).abs(),
+                (df["low"] - previous_close).abs()
+            ],
+            axis=1
+        ).max(axis=1)
+
+        df["atr"] = tr.ewm(
+            alpha=1 / 14,
+            adjust=False
+        ).mean()
+
+        # =====================================
+        # ADX
+        # =====================================
+
+        up_move = df["high"].diff()
+        down_move = -df["low"].diff()
+
+        plus_dm = pd.Series(
+            np.where(
+                (up_move > down_move) & (up_move > 0),
+                up_move,
+                0
+            ),
+            index=df.index
         )
 
-        df["atr"] = atr.average_true_range()
-
-        bb = BollingerBands(
-            close=close,
-            window=20,
-            window_dev=2
+        minus_dm = pd.Series(
+            np.where(
+                (down_move > up_move) & (down_move > 0),
+                down_move,
+                0
+            ),
+            index=df.index
         )
 
-        df["bb_upper"] = bb.bollinger_hband()
-        df["bb_middle"] = bb.bollinger_mavg()
-        df["bb_lower"] = bb.bollinger_lband()
+        atr_safe = df["atr"].replace(0, np.nan)
+
+        plus_di = (
+            100 * plus_dm.ewm(
+                alpha=1 / 14,
+                adjust=False
+            ).mean() / atr_safe
+        )
+
+        minus_di = (
+            100 * minus_dm.ewm(
+                alpha=1 / 14,
+                adjust=False
+            ).mean() / atr_safe
+        )
+
+        dx = (
+            100 * (plus_di - minus_di).abs()
+            / (plus_di + minus_di).replace(0, np.nan)
+        )
+
+        df["adx"] = dx.ewm(
+            alpha=1 / 14,
+            adjust=False
+        ).mean()
+
+        df["plus_di"] = plus_di
+        df["minus_di"] = minus_di
+
+        # =====================================
+        # BOLLINGER BANDS
+        # =====================================
+
+        df["bb_middle"] = df["close"].rolling(20).mean()
+
+        bb_std = df["close"].rolling(20).std()
+
+        df["bb_upper"] = df["bb_middle"] + 2 * bb_std
+        df["bb_lower"] = df["bb_middle"] - 2 * bb_std
+
+        # =====================================
+        # FINAL CANDLE
+        # =====================================
 
         last = df.iloc[-1]
-        previous = df.iloc[-2]
 
-        indicator_columns = [
-            "ema_9", "ema_21", "ema_50",
-            "rsi", "macd", "macd_signal",
-            "macd_hist", "adx", "plus_di",
-            "minus_di", "atr", "bb_upper",
-            "bb_middle", "bb_lower"
+        values = [
+            last["ema9"],
+            last["ema21"],
+            last["ema50"],
+            last["ema200"],
+            last["rsi"],
+            last["macd"],
+            last["macd_signal"],
+            last["atr"],
+            last["adx"],
+            last["plus_di"],
+            last["minus_di"],
+            last["bb_upper"],
+            last["bb_lower"]
         ]
 
-        if last[indicator_columns].isna().any():
-            return {
-                "status": "insufficient_data",
-                "signal": "WAIT",
-                "message": "Indicators are not ready",
-                "confidence": 0
-            }
+        if not all(np.isfinite(value) for value in values):
+            return error_result("Indicators are not ready")
 
-        # -------------------------
-        # 2. MARKET TREND
-        # -------------------------
-
-        bullish_trend = (
-            last["ema_9"] > last["ema_21"]
-            and last["ema_21"] > last["ema_50"]
-            and last["close"] > last["ema_50"]
-        )
-
-        bearish_trend = (
-            last["ema_9"] < last["ema_21"]
-            and last["ema_21"] < last["ema_50"]
-            and last["close"] < last["ema_50"]
-        )
-
-        # -------------------------
-        # 3. MOMENTUM
-        # -------------------------
-
-        bullish_macd = (
-            last["macd"] > last["macd_signal"]
-            and last["macd_hist"] > previous["macd_hist"]
-        )
-
-        bearish_macd = (
-            last["macd"] < last["macd_signal"]
-            and last["macd_hist"] < previous["macd_hist"]
-        )
-
+        price = float(last["close"])
+        atr = float(last["atr"])
         rsi = float(last["rsi"])
+        adx = float(last["adx"])
 
-        bullish_rsi = 50 < rsi < 70
-        bearish_rsi = 30 < rsi < 50
+        if atr <= 0 or price <= 0:
+            return error_result("Invalid ATR or price")
 
-        # -------------------------
-        # 4. MARKET STRENGTH
-        # -------------------------
+        # =====================================
+        # SUPPORT AND RESISTANCE
+        # =====================================
 
-        adx_value = float(last["adx"])
-
-        strong_market = adx_value >= 20
-
-        bullish_direction = (
-            last["plus_di"] > last["minus_di"]
-        )
-
-        bearish_direction = (
-            last["minus_di"] > last["plus_di"]
-        )
-
-        # -------------------------
-        # 5. CANDLE ANALYSIS
-        # -------------------------
-
-        candle_range = float(
-            last["high"] - last["low"]
-        )
-
-        candle_body = abs(
-            float(last["close"] - last["open"])
-        )
-
-        candle_strength = (
-            candle_body / candle_range
-            if candle_range > 0 else 0
-        )
-
-        bullish_candle = (
-            last["close"] > last["open"]
-            and candle_strength >= 0.4
-        )
-
-        bearish_candle = (
-            last["close"] < last["open"]
-            and candle_strength >= 0.4
-        )
-
-        # -------------------------
-        # 6. SUPPORT / RESISTANCE
-        # -------------------------
-
-        recent = df.iloc[-21:-1]
+        recent = df.tail(50)
 
         support = float(recent["low"].min())
         resistance = float(recent["high"].max())
 
-        current_price = float(last["close"])
+        # =====================================
+        # SIGNAL SCORING
+        # =====================================
 
-        # -------------------------
-        # 7. VOLATILITY
-        # -------------------------
+        long_points = 0
+        short_points = 0
 
-        atr_value = float(last["atr"])
+        # EMA trend
+        if last["ema9"] > last["ema21"]:
+            long_points += 15
+        elif last["ema9"] < last["ema21"]:
+            short_points += 15
 
-        bb_upper = float(last["bb_upper"])
-        bb_lower = float(last["bb_lower"])
+        if last["ema21"] > last["ema50"]:
+            long_points += 15
+        elif last["ema21"] < last["ema50"]:
+            short_points += 15
 
-        volatility_percent = (
-            atr_value / current_price * 100
-            if current_price > 0 else 0
-        )
+        if price > last["ema200"]:
+            long_points += 10
+        elif price < last["ema200"]:
+            short_points += 10
 
-        # -------------------------
-        # 8. INTELLIGENCE SCORE
-        # -------------------------
+        # RSI
+        if 50 < rsi < 70:
+            long_points += 15
+        elif 30 < rsi < 50:
+            short_points += 15
 
-        long_score = 0
-        short_score = 0
-        reasons = []
+        # MACD
+        if last["macd"] > last["macd_signal"]:
+            long_points += 15
+        elif last["macd"] < last["macd_signal"]:
+            short_points += 15
 
-        if bullish_trend:
-            long_score += 2
-            reasons.append("Bullish EMA trend")
+        # ADX trend strength and direction
+        if adx >= 20:
+            if last["plus_di"] > last["minus_di"]:
+                long_points += 15
+            elif last["minus_di"] > last["plus_di"]:
+                short_points += 15
 
-        if bearish_trend:
-            short_score += 2
-            reasons.append("Bearish EMA trend")
+        # Bollinger position
+        if price > last["bb_middle"]:
+            long_points += 10
+        elif price < last["bb_middle"]:
+            short_points += 10
 
-        if bullish_macd:
-            long_score += 2
-            reasons.append("MACD bullish momentum")
-
-        if bearish_macd:
-            short_score += 2
-            reasons.append("MACD bearish momentum")
-
-        if bullish_rsi:
-            long_score += 1
-            reasons.append("RSI supports buyers")
-
-        if bearish_rsi:
-            short_score += 1
-            reasons.append("RSI supports sellers")
-
-        if strong_market and bullish_direction:
-            long_score += 1
-            reasons.append("ADX confirms bullish direction")
-
-        if strong_market and bearish_direction:
-            short_score += 1
-            reasons.append("ADX confirms bearish direction")
-
-        if bullish_candle:
-            long_score += 1
-            reasons.append("Bullish candle confirmation")
-
-        if bearish_candle:
-            short_score += 1
-            reasons.append("Bearish candle confirmation")
-
-        # -------------------------
-        # 9. SIGNAL DECISION
-        # -------------------------
-
-        signal = "WAIT"
+        # =====================================
+        # SIGNAL DECISION
+        # =====================================
 
         if (
-            bullish_trend
-            and strong_market
-            and long_score >= 6
-            and long_score > short_score
-            and not bearish_candle
+            long_points >= MIN_SIGNAL_SCORE
+            and long_points > short_points
         ):
             signal = "LONG"
+            score = long_points
 
         elif (
-            bearish_trend
-            and strong_market
-            and short_score >= 6
-            and short_score > long_score
-            and not bullish_candle
+            short_points >= MIN_SIGNAL_SCORE
+            and short_points > long_points
         ):
             signal = "SHORT"
+            score = short_points
 
-        # Score is NOT a probability of winning.
-        best_score = max(long_score, short_score)
+        else:
+            signal = "WAIT"
+            score = max(long_points, short_points)
 
-        analysis_score = min(
-            100, round(best_score / 7 * 100)
-        )
+        # =====================================
+        # ENTRY / STOP LOSS / TARGET
+        # =====================================
 
-        # -------------------------
-        # 10. VIRTUAL TRADE LEVELS
-        # -------------------------
-
-        entry = current_price
+        entry = price
         stop_loss = None
-        take_profit_1 = None
-        take_profit_2 = None
+        take_profit = None
 
         if signal == "LONG":
-            stop_loss = entry - (atr_value * 1.5)
-            take_profit_1 = entry + (atr_value * 2)
-            take_profit_2 = entry + (atr_value * 3)
-
-        elif signal == "SHORT":
-            stop_loss = entry + (atr_value * 1.5)
-            take_profit_1 = entry - (atr_value * 2)
-            take_profit_2 = entry - (atr_value * 3)
-
-        # -------------------------
-        # 11. EXPLANATION
-        # -------------------------
-
-        if signal == "WAIT":
-            reasons.append(
-                "Conditions are not strong enough for confirmation"
+            stop_loss = entry - (atr * 1.5)
+            take_profit = entry + (
+                (entry - stop_loss) * 2
             )
 
+        elif signal == "SHORT":
+            stop_loss = entry + (atr * 1.5)
+            take_profit = entry - (
+                (stop_loss - entry) * 2
+            )
+
+        # =====================================
+        # RESULT
+        # =====================================
+
         return {
-            "status": "success",
             "signal": signal,
+            "score": int(score),
+            "analysis_score": int(score),
+            "confidence": int(score),
 
-            "analysis_score": analysis_score,
-            "confidence": analysis_score,
-
-            "long_score": long_score,
-            "short_score": short_score,
-
-            "price": round(current_price, 6),
-
-            "rsi": round(rsi, 2),
-
-            "ema_9": round(float(last["ema_9"]), 6),
-            "ema_21": round(float(last["ema_21"]), 6),
-            "ema_50": round(float(last["ema_50"]), 6),
-
-            "macd": round(float(last["macd"]), 6),
-            "macd_signal": round(
-                float(last["macd_signal"]), 6
-            ),
-
-            "adx": round(adx_value, 2),
-
-            "atr": round(atr_value, 6),
-            "volatility_percent": round(
-                volatility_percent, 4
-            ),
-
-            "bb_upper": round(bb_upper, 6),
-            "bb_middle": round(
-                float(last["bb_middle"]), 6
-            ),
-            "bb_lower": round(bb_lower, 6),
-
-            "support": round(support, 6),
-            "resistance": round(resistance, 6),
-
-            "candle_strength": round(
-                candle_strength, 2
-            ),
-
+            "price": round(price, 6),
             "entry": round(entry, 6),
+
             "stop_loss": (
                 round(stop_loss, 6)
                 if stop_loss is not None else None
             ),
-            "take_profit_1": (
-                round(take_profit_1, 6)
-                if take_profit_1 is not None else None
-            ),
-            "take_profit_2": (
-                round(take_profit_2, 6)
-                if take_profit_2 is not None else None
+
+            "take_profit": (
+                round(take_profit, 6)
+                if take_profit is not None else None
             ),
 
-            "reasons": reasons
+            "indicators": {
+                "ema9": round(float(last["ema9"]), 6),
+                "ema21": round(float(last["ema21"]), 6),
+                "ema50": round(float(last["ema50"]), 6),
+                "ema200": round(float(last["ema200"]), 6),
+                "rsi": round(rsi, 2),
+                "macd": round(float(last["macd"]), 6),
+                "macd_signal": round(
+                    float(last["macd_signal"]), 6
+                ),
+                "adx": round(adx, 2),
+                "atr": round(atr, 6),
+                "plus_di": round(
+                    float(last["plus_di"]), 2
+                ),
+                "minus_di": round(
+                    float(last["minus_di"]), 2
+                )
+            },
+
+            "support": round(support, 6),
+            "resistance": round(resistance, 6),
+
+            "long_score": int(long_points),
+            "short_score": int(short_points),
+
+            "mode": "SIMULATION"
         }
 
     except Exception as error:
-        return {
-            "status": "error",
-            "signal": "WAIT",
-            "message": str(error),
-            "confidence": 0
-        }
+        logger.exception("Market analysis failed")
+        return error_result(str(error))
