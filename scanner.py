@@ -1,48 +1,89 @@
-import asyncio
+
+import logging
+
+from config import PAIRS, CANDLE_LIMIT
 from market_data import get_candles
 from indicators import analyze_market
-from main import PAIRS
+
+logger = logging.getLogger(__name__)
+
+# =====================================
+# FOREX HUNTER AI 5.0
+# SINGLE PAIR SCANNER
+# =====================================
 
 
-async def scan_pair(pair, interval):
-    try:
-        candles = await get_candles(pair, interval)
+async def scan_pair(pair: str):
+    """
+    Analyze only the requested Forex pair.
+    No automatic scanning of all pairs.
+    """
+
+    pair = pair.upper().strip()
+
+    if pair not in PAIRS:
+        return {
+            "pair": pair,
+            "status": "error",
+            "error": "Unsupported currency pair"
+        }
+
+    results = {}
+
+    for interval in ("1min", "5min"):
+
+        candles = await get_candles(
+            pair,
+            interval,
+            CANDLE_LIMIT
+        )
 
         if isinstance(candles, dict):
             return {
                 "pair": pair,
+                "status": "error",
                 "timeframe": interval,
                 "error": candles.get("error")
             }
 
-        return {
-            "pair": pair,
-            "timeframe": interval,
-            "analysis": analyze_market(candles)
-        }
+        analysis = analyze_market(candles)
 
-    except Exception as error:
-        return {
-            "pair": pair,
-            "timeframe": interval,
-            "error": str(error)
-        }
+        results[interval] = analysis
 
+        if analysis.get("error"):
+            return {
+                "pair": pair,
+                "status": "error",
+                "timeframe": interval,
+                "error": analysis["error"]
+            }
 
-async def scan_all():
-    results = []
+    m1 = results["1min"]
+    m5 = results["5min"]
 
-    for pair in PAIRS:
-        for interval in ["1min", "5min"]:
-            result = await scan_pair(pair, interval)
-            results.append(result)
+    signal = "WAIT"
 
-            print(result)
+    if (
+        m1["signal"] == "LONG"
+        and m5["signal"] == "LONG"
+        and m1["score"] >= 70
+        and m5["score"] >= 70
+    ):
+        signal = "LONG"
 
-            await asyncio.sleep(2)
+    elif (
+        m1["signal"] == "SHORT"
+        and m5["signal"] == "SHORT"
+        and m1["score"] >= 70
+        and m5["score"] >= 70
+    ):
+        signal = "SHORT"
 
-    return results
-
-
-if __name__ == "__main__":
-    asyncio.run(scan_all())
+    return {
+        "pair": pair,
+        "status": "completed",
+        "signal": signal,
+        "M1": m1,
+        "M5": m5,
+        "mode": "SIMULATION"
+    }
