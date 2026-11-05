@@ -1,4 +1,3 @@
-
 import os
 import time
 import asyncio
@@ -9,20 +8,13 @@ from lse import LSE
 
 load_dotenv()
 
-# =====================================
-# FOREX HUNTER AI 5.0
-# MARKET DATA
-# =====================================
-
 logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("LSE_API_KEY")
-
 client = LSE(api_key=API_KEY) if API_KEY else None
 
 CACHE = {}
 CACHE_TTL = 30
-
 API_SEMAPHORE = asyncio.Semaphore(2)
 
 TIMEFRAME_MAP = {
@@ -30,19 +22,19 @@ TIMEFRAME_MAP = {
     "5min": "5m"
 }
 
+FOREX_MARKET = "forex"
+
 
 def normalize_pair(pair: str) -> str:
-    """Normalize Forex pair format."""
     return pair.upper().replace("-", "/").strip()
 
 
+def provider_symbol(pair: str) -> str:
+    return normalize_pair(pair).replace("/", "_")
+
+
 def validate_candles(candles):
-    """Check candle structure and values."""
-
-    if not isinstance(candles, list):
-        return False
-
-    if len(candles) < 60:
+    if not isinstance(candles, list) or len(candles) < 60:
         return False
 
     required = ["open", "high", "low", "close"]
@@ -51,29 +43,31 @@ def validate_candles(candles):
         if not isinstance(candle, dict):
             return False
 
-        for field in required:
-            if field not in candle:
-                return False
+        try:
+            values = {
+                field: float(candle[field])
+                for field in required
+            }
 
-            try:
-                value = float(candle[field])
-                if not (value > 0 and value < float("inf")):
+            for value in values.values():
+                if not (0 < value < float("inf")):
                     return False
-            except (TypeError, ValueError):
+
+            high = values["high"]
+            low = values["low"]
+            open_price = values["open"]
+            close_price = values["close"]
+
+            if high < low:
                 return False
 
-        high = float(candle["high"])
-        low = float(candle["low"])
-        open_price = float(candle["open"])
-        close_price = float(candle["close"])
+            if high < max(open_price, close_price):
+                return False
 
-        if high < low:
-            return False
+            if low > min(open_price, close_price):
+                return False
 
-        if high < max(open_price, close_price):
-            return False
-
-        if low > min(open_price, close_price):
+        except (KeyError, TypeError, ValueError):
             return False
 
     return True
@@ -84,34 +78,20 @@ async def get_candles(
     interval: str = "1min",
     outputsize: int = 300
 ):
-    """
-    Get Forex candles.
-
-    Returns:
-        List of OHLC candles or an error dictionary.
-    """
-
     if client is None:
-        return {
-            "error": "LSE_API_KEY is not configured"
-        }
+        return {"error": "LSE_API_KEY is not configured"}
 
     pair = normalize_pair(pair)
 
     if interval not in TIMEFRAME_MAP:
-        return {
-            "error": f"Unsupported timeframe: {interval}"
-        }
+        return {"error": f"Unsupported timeframe: {interval}"}
 
     if outputsize < 60:
-        return {
-            "error": "At least 60 candles are required"
-        }
+        return {"error": "At least 60 candles are required"}
 
     cache_key = (pair, interval, outputsize)
     current_time = time.time()
 
-    # Check cache
     cached = CACHE.get(cache_key)
 
     if cached:
@@ -121,17 +101,17 @@ async def get_candles(
             return cached_data
 
     timeframe = TIMEFRAME_MAP[interval]
+    symbol = provider_symbol(pair)
 
     try:
         async with API_SEMAPHORE:
-
-            # API request runs in a separate thread
             response = await asyncio.to_thread(
                 client.candles,
-                pair,
+                symbol,
                 timeframe,
                 limit=outputsize,
-                order="asc"
+                order="asc",
+                market=FOREX_MARKET
             )
 
         if not response:
@@ -140,7 +120,10 @@ async def get_candles(
             }
 
         if isinstance(response, dict):
-            response = response.get("candles", response.get("data", []))
+            response = response.get(
+                "candles",
+                response.get("data", [])
+            )
 
         if not isinstance(response, list):
             return {
@@ -161,10 +144,14 @@ async def get_candles(
                 if "volume" in item:
                     candle["volume"] = float(item["volume"])
 
-                if "time" in item:
-                    candle["time"] = item["time"]
-                elif "timestamp" in item:
-                    candle["time"] = item["timestamp"]
+                timestamp = (
+                    item.get("timestamp")
+                    or item.get("time")
+                    or item.get("ts")
+                )
+
+                if timestamp is not None:
+                    candle["time"] = timestamp
 
                 candles.append(candle)
 
@@ -174,15 +161,17 @@ async def get_candles(
         if not validate_candles(candles):
             return {
                 "error": (
-                    f"Insufficient or invalid candle data for {pair}. "
-                    f"Received: {len(candles)}"
+                    f"Insufficient or invalid candle data "
+                    f"for {pair}. Received: {len(candles)}"
                 )
             }
 
-        # Keep the latest requested number of candles
         candles = candles[-outputsize:]
 
-        CACHE[cache_key] = (time.time(), candles)
+        CACHE[cache_key] = (
+            time.time(),
+            candles
+        )
 
         return candles
 
@@ -199,5 +188,4 @@ async def get_candles(
 
 
 def clear_cache():
-    """Clear cached market data."""
     CACHE.clear()
