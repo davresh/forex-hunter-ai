@@ -1,551 +1,741 @@
 
-import asyncio
 import os
-import time
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from telegram import (
-    Bot,
+    Update,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Update
+    InlineKeyboardMarkup
 )
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
+    CallbackQueryHandler,
     ContextTypes
 )
 
-from indicators import analyze_market
+from config import (
+    PROJECT_NAME,
+    VERSION,
+    TELEGRAM_BOT_TOKEN,
+    PAIRS,
+    CANDLE_LIMIT,
+    SCAN_INTERVAL,
+    MAX_HISTORY,
+    MIN_SIGNAL_SCORE,
+    INITIAL_BALANCE,
+    RISK_PERCENT,
+    REWARD_RISK
+)
+
 from market_data import get_candles
+from indicators import analyze_market
+from sentiment import get_market_sentiment
 from backtesting import run_backtest
 
 
-PAIRS = [
-    "EUR/USD", "GBP/USD", "USD/JPY", "USD/CHF",
-    "AUD/USD", "USD/CAD", "EUR/GBP", "EUR/JPY",
-    "EUR/CHF", "EUR/AUD", "EUR/CAD", "GBP/JPY",
-    "GBP/CHF", "GBP/AUD", "GBP/CAD", "AUD/JPY",
-    "AUD/CHF", "AUD/CAD", "CAD/JPY", "CAD/CHF",
-    "CHF/JPY"
-]
+# =====================================
+# FOREX HUNTER AI 5.0
+# MAIN APPLICATION
+# SIMULATION ONLY
+# =====================================
 
-SCANNING_ENABLED = False
-LAST_SENT = {}
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logger = logging.getLogger(__name__)
+
 SIGNAL_HISTORY = []
-MAX_HISTORY = 100
+MONITOR_TASKS = {}
+LAST_SENT = {}
 
-SCAN_SEMAPHORE = asyncio.Semaphore(1)
 TELEGRAM_APP = None
-SCAN_STATUS = "Ожидание"
 
 
-def now_text():
-    return datetime.now(timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S UTC"
-    )
+# =====================================
+# TELEGRAM KEYBOARDS
+# =====================================
 
-
-def telegram_keyboard():
+def main_keyboard():
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("▶ СТАРТ", callback_data="start"),
-            InlineKeyboardButton("⏹ СТОП", callback_data="stop")
+            InlineKeyboardButton(
+                "💱 Выбрать валютную пару",
+                callback_data="menu|pairs"
+            )
         ],
         [
             InlineKeyboardButton(
-                "☁️ СТАТУС RENDER",
-                callback_data="status"
+                "📊 Анализировать",
+                callback_data="menu|analyze"
+            ),
+            InlineKeyboardButton(
+                "▶️ Мониторинг",
+                callback_data="menu|monitor"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "⏹ Остановить",
+                callback_data="menu|stop"
+            ),
+            InlineKeyboardButton(
+                "📜 История",
+                callback_data="menu|history"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "ℹ️ Статус",
+                callback_data="menu|status"
             )
         ]
     ])
 
 
-async def send_telegram(message):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+def pairs_keyboard():
+    buttons = []
 
-    if not token or not chat_id:
-        print("Не настроены данные Telegram")
-        return False
-
-    try:
-        bot = Bot(token=token)
-
-        async with bot:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=message
+    for index in range(0, len(PAIRS), 2):
+        row = [
+            InlineKeyboardButton(
+                pair,
+                callback_data=f"pair|{pair}"
             )
+            for pair in PAIRS[index:index + 2]
+        ]
 
-        return True
+        buttons.append(row)
 
-    except Exception as error:
-        print("Ошибка Telegram:", error)
-        return False
-
-
-async def telegram_start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    allowed_chat = os.getenv("TELEGRAM_CHAT_ID")
-
-    if str(update.effective_chat.id) != str(allowed_chat):
-        await update.message.reply_text("⛔ Доступ запрещён.")
-        return
-
-    await update.message.reply_text(
-        "🚀 FOREX HUNTER AI\n\n"
-        "Добро пожаловать!\n"
-        "Выберите действие:",
-        reply_markup=telegram_keyboard()
-    )
-
-
-async def telegram_buttons(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-    global SCANNING_ENABLED
-
-    query = update.callback_query
-    await query.answer()
-
-    allowed_chat = os.getenv("TELEGRAM_CHAT_ID")
-
-    if str(query.message.chat_id) != str(allowed_chat):
-        await query.edit_message_text("⛔ Доступ запрещён.")
-        return
-
-    if query.data == "start":
-        SCANNING_ENABLED = True
-        message = "🟢 Сканирование запущено!"
-
-    elif query.data == "stop":
-        SCANNING_ENABLED = False
-        message = "🔴 Сканирование остановлено!"
-
-    elif query.data == "status":
-        message = (
-            "☁️ СТАТУС FOREX HUNTER AI\n\n"
-            "🟢 Render: ПРИЛОЖЕНИЕ ОТВЕЧАЕТ\n"
-            f"📡 Сканирование: "
-            f"{'ВКЛЮЧЕНО 🟢' if SCANNING_ENABLED else 'ОСТАНОВЛЕНО 🔴'}\n"
-            f"🔄 Текущий процесс: {SCAN_STATUS}\n"
-            f"💱 Валютных пар: {len(PAIRS)}\n"
-            "📊 Таймфреймы: M1 + M5\n"
-            f"🕒 Время: {now_text()}"
+    buttons.append([
+        InlineKeyboardButton(
+            "⬅️ Главное меню",
+            callback_data="menu|home"
         )
+    ])
 
-    else:
-        return
-
-    await query.edit_message_text(
-        message,
-        reply_markup=telegram_keyboard()
-    )
+    return InlineKeyboardMarkup(buttons)
 
 
-async def analyze_pair(pair, interval):
-    try:
-        candles = await get_candles(
-            pair,
-            interval,
-            outputsize=100
-        )
+# =====================================
+# MARKET ANALYSIS
+# =====================================
 
-        if isinstance(candles, dict) and "error" in candles:
-            return {"error": candles["error"]}
+async def analyze_pair(pair: str):
+    """
+    Analyze one selected pair on M1 and M5.
+    """
 
-        result = analyze_market(candles)
+    pair = pair.upper().strip()
 
-        if result.get("status") != "success":
-            return {
-                "error": result.get(
-                    "message",
-                    "Ошибка анализа"
-                )
-            }
-
-        return result
-
-    except Exception as error:
-        return {"error": str(error)}
-
-
-async def scan_one_pair(pair):
-    global SCAN_STATUS
-
-    async with SCAN_SEMAPHORE:
-        started = time.time()
-        SCAN_STATUS = f"Анализ {pair}"
-
-        m1 = await analyze_pair(pair, "1min")
-        m5 = await analyze_pair(pair, "5min")
-
-        if "error" in m1 or "error" in m5:
-            return {
-                "pair": pair,
-                "status": "ОШИБКА ДАННЫХ",
-                "m1": m1,
-                "m5": m5
-            }
-
-        signal1 = m1.get("signal")
-        signal5 = m5.get("signal")
-
-        if (
-            signal1 not in ("LONG", "SHORT")
-            or signal1 != signal5
-        ):
-            LAST_SENT.pop(pair, None)
-
-            return {
-                "pair": pair,
-                "status": "ОЖИДАНИЕ",
-                "m1": m1,
-                "m5": m5
-            }
-
-        result = dict(m5)
-        result["signal"] = signal1
-
-        result["analysis_score"] = round(
-            (
-                m1.get("analysis_score", 0)
-                + m5.get("analysis_score", 0)
-            ) / 2
-        )
-
-        if LAST_SENT.get(pair) != signal1:
-            message = (
-                "🚀 FOREX HUNTER AI\n\n"
-                f"💱 Валютная пара: {pair}\n"
-                f"📊 Сигнал: {signal1}\n"
-                f"💰 Вход: {result.get('entry')}\n"
-                f"🛑 Стоп-лосс: {result.get('stop_loss')}\n"
-                f"🎯 Тейк-профит 1: {result.get('take_profit_1')}\n"
-                f"🎯 Тейк-профит 2: {result.get('take_profit_2')}\n"
-                f"⭐ Оценка: {result.get('analysis_score')}/100\n"
-                f"📈 RSI: {result.get('rsi')}\n"
-                f"📊 ADX: {result.get('adx')}\n"
-                f"🕒 Время: {now_text()}\n\n"
-                "⚠️ Только аналитический сигнал. "
-                "Не финансовая рекомендация."
-            )
-
-            if await send_telegram(message):
-                LAST_SENT[pair] = signal1
-
-        SIGNAL_HISTORY.insert(0, {
-            "pair": pair,
-            "signal": signal1,
-            "entry": result.get("entry"),
-            "stop_loss": result.get("stop_loss"),
-            "take_profit_1": result.get("take_profit_1"),
-            "score": result.get("analysis_score"),
-            "time": now_text()
-        })
-
-        del SIGNAL_HISTORY[MAX_HISTORY:]
-
+    if pair not in PAIRS:
         return {
-            "pair": pair,
-            "status": f"ПОДТВЕРЖДЁН {signal1}",
-            "m1": m1,
-            "m5": m5,
-            "combined": result,
-            "duration": round(time.time() - started, 2)
+            "error": "Unsupported currency pair"
         }
 
+    m1_candles = await get_candles(
+        pair,
+        "1min",
+        CANDLE_LIMIT
+    )
 
-async def automatic_scan():
-    global SCAN_STATUS
+    m5_candles = await get_candles(
+        pair,
+        "5min",
+        CANDLE_LIMIT
+    )
 
-    await asyncio.sleep(10)
-
-    while True:
-        if SCANNING_ENABLED:
-            print("Начало автоматического сканирования:", now_text())
-
-            for pair in PAIRS:
-                if not SCANNING_ENABLED:
-                    break
-
-                try:
-                    result = await scan_one_pair(pair)
-                    print(pair, result.get("status"))
-
-                except Exception as error:
-                    print("Ошибка сканирования:", pair, error)
-
-            SCAN_STATUS = (
-                "Сканирование остановлено"
-                if not SCANNING_ENABLED
-                else "Ожидание следующего цикла"
+    if isinstance(m1_candles, dict):
+        return {
+            "error": "M1: " + m1_candles.get(
+                "error", "Market data unavailable"
             )
+        }
 
-        await asyncio.sleep(60)
+    if isinstance(m5_candles, dict):
+        return {
+            "error": "M5: " + m5_candles.get(
+                "error", "Market data unavailable"
+            )
+        }
 
+    m1 = analyze_market(m1_candles)
+    m5 = analyze_market(m5_candles)
+
+    if m1.get("error") or m5.get("error"):
+        return {
+            "error": (
+                "M1: "
+                + str(m1.get("error", "OK"))
+                + " | M5: "
+                + str(m5.get("error", "OK"))
+            )
+        }
+
+    signal = "WAIT"
+
+    if (
+        m1.get("signal") == "LONG"
+        and m5.get("signal") == "LONG"
+        and m1.get("score", 0) >= MIN_SIGNAL_SCORE
+        and m5.get("score", 0) >= MIN_SIGNAL_SCORE
+    ):
+        signal = "LONG"
+
+    elif (
+        m1.get("signal") == "SHORT"
+        and m5.get("signal") == "SHORT"
+        and m1.get("score", 0) >= MIN_SIGNAL_SCORE
+        and m5.get("score", 0) >= MIN_SIGNAL_SCORE
+    ):
+        signal = "SHORT"
+
+    sentiment = await get_market_sentiment(pair)
+
+    result = {
+        "pair": pair,
+        "signal": signal,
+        "m1": m1,
+        "m5": m5,
+        "sentiment": sentiment,
+        "timestamp": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "mode": "SIMULATION"
+    }
+
+    if signal in ("LONG", "SHORT"):
+        result["entry"] = m1.get("entry")
+        result["stop_loss"] = m1.get("stop_loss")
+        result["take_profit"] = m1.get("take_profit")
+
+    SIGNAL_HISTORY.append(result)
+
+    if len(SIGNAL_HISTORY) > MAX_HISTORY:
+        SIGNAL_HISTORY.pop(0)
+
+    return result
+
+
+# =====================================
+# FORMAT ANALYSIS
+# =====================================
+
+def format_analysis(result):
+    if result.get("error"):
+        return (
+            "⚠️ Ошибка анализа\n\n"
+            + str(result["error"])
+        )
+
+    pair = result["pair"]
+    signal = result["signal"]
+
+    m1 = result["m1"]
+    m5 = result["m5"]
+
+    sentiment = result.get("sentiment", {})
+    combined = sentiment.get("combined", {})
+
+    signal_names = {
+        "LONG": "🟢 BUY / LONG",
+        "SHORT": "🔴 SELL / SHORT",
+        "WAIT": "🟡 WAIT / ОЖИДАНИЕ"
+    }
+
+    message = (
+        f"📊 FOREX HUNTER AI {VERSION}\n\n"
+        f"💱 Пара: {pair}\n"
+        f"📍 Сигнал: {signal_names.get(signal, signal)}\n\n"
+        f"⏱ M1: {m1.get('signal')} "
+        f"({m1.get('score')}/100)\n"
+        f"⏱ M5: {m5.get('signal')} "
+        f"({m5.get('score')}/100)\n\n"
+    )
+
+    if signal in ("LONG", "SHORT"):
+        message += (
+            f"🎯 Entry: {result.get('entry')}\n"
+            f"🛑 Stop Loss: {result.get('stop_loss')}\n"
+            f"🏁 Take Profit: {result.get('take_profit')}\n\n"
+        )
+
+    message += "📈 MARKET SENTIMENT\n"
+
+    if combined.get("status") == "available":
+        message += (
+            f"BUY: {combined.get('buy_percent')}%\n"
+            f"SELL: {combined.get('sell_percent')}%\n"
+            f"Направление: {combined.get('direction')}\n"
+        )
+    else:
+        message += (
+            "Данные BUY/SELL пока недоступны.\n"
+        )
+
+    message += (
+        "\n⚠️ Фильтр новостей не подключён.\n"
+        "Оценка индикаторов не является вероятностью прибыли.\n"
+        "Режим: SIMULATION — реальные сделки отключены."
+    )
+
+    return message
+
+
+# =====================================
+# TELEGRAM START
+# =====================================
+
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    context.user_data.setdefault("selected_pair", None)
+
+    await update.message.reply_text(
+        "🤖 Добро пожаловать в Forex Hunter AI!\n\n"
+        "Выбери валютную пару и управляй анализом "
+        "через кнопки.\n\n"
+        "⚠️ Бот работает в режиме симуляции.",
+        reply_markup=main_keyboard()
+    )
+
+
+# =====================================
+# TELEGRAM CALLBACKS
+# =====================================
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+    query = update.callback_query
+
+    await query.answer()
+
+    chat_id = update.effective_chat.id
+    data = query.data
+
+    if data.startswith("pair|"):
+        pair = data.split("|", 1)[1]
+
+        if pair not in PAIRS:
+            await query.edit_message_text(
+                "Неизвестная валютная пара."
+            )
+            return
+
+        context.user_data["selected_pair"] = pair
+
+        await query.edit_message_text(
+            f"✅ Выбрана пара: {pair}\n\n"
+            "Теперь можешь запустить анализ "
+            "или мониторинг.",
+            reply_markup=main_keyboard()
+        )
+
+        return
+
+    action = data.split("|", 1)[1]
+
+    if action == "home":
+        await query.edit_message_text(
+            "🤖 FOREX HUNTER AI\n\n"
+            "Главное меню:",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if action == "pairs":
+        await query.edit_message_text(
+            "💱 Выбери одну валютную пару:",
+            reply_markup=pairs_keyboard()
+        )
+        return
+
+    pair = context.user_data.get("selected_pair")
+
+    if action in ("analyze", "monitor") and not pair:
+        await query.edit_message_text(
+            "Сначала выбери валютную пару.",
+            reply_markup=pairs_keyboard()
+        )
+        return
+
+    if action == "analyze":
+        await query.edit_message_text(
+            f"⏳ Анализирую {pair} на M1 и M5..."
+        )
+
+        result = await analyze_pair(pair)
+
+        await query.message.reply_text(
+            format_analysis(result),
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if action == "monitor":
+        if chat_id in MONITOR_TASKS:
+            await query.edit_message_text(
+                f"Мониторинг {pair} уже запущен.",
+                reply_markup=main_keyboard()
+            )
+            return
+
+        task = asyncio.create_task(
+            monitor_pair(chat_id, pair)
+        )
+
+        MONITOR_TASKS[chat_id] = task
+
+        await query.edit_message_text(
+            f"▶️ Мониторинг запущен!\n\n"
+            f"Пара: {pair}\n"
+            f"Таймфреймы: M1 + M5\n"
+            f"Интервал проверки: {SCAN_INTERVAL} сек.",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if action == "stop":
+        task = MONITOR_TASKS.pop(chat_id, None)
+
+        if task:
+            task.cancel()
+
+            await query.edit_message_text(
+                "⏹ Мониторинг остановлен.",
+                reply_markup=main_keyboard()
+            )
+        else:
+            await query.edit_message_text(
+                "Мониторинг сейчас не запущен.",
+                reply_markup=main_keyboard()
+            )
+        return
+
+    if action == "history":
+        history = [
+            item for item in SIGNAL_HISTORY
+            if item.get("pair") == pair
+        ] if pair else []
+
+        if not history:
+            message = "📜 История пока пуста."
+        else:
+            lines = ["📜 Последние результаты:\n"]
+
+            for item in history[-10:]:
+                lines.append(
+                    f"{item['pair']}: {item['signal']}"
+                )
+
+            message = "\n".join(lines)
+
+        await query.edit_message_text(
+            message,
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if action == "status":
+        monitoring = chat_id in MONITOR_TASKS
+
+        message = (
+            "ℹ️ FOREX HUNTER AI STATUS\n\n"
+            f"Версия: {VERSION}\n"
+            f"Выбранная пара: {pair or 'Не выбрана'}\n"
+            f"Мониторинг: "
+            f"{'Включён' if monitoring else 'Выключен'}\n"
+            f"История: {len(SIGNAL_HISTORY)} записей\n"
+            "Режим: SIMULATION\n"
+            "Реальная торговля: ОТКЛЮЧЕНА"
+        )
+
+        await query.edit_message_text(
+            message,
+            reply_markup=main_keyboard()
+        )
+
+
+# =====================================
+# MONITORING
+# =====================================
+
+async def monitor_pair(chat_id, pair):
+    """
+    Monitor only the selected pair.
+    """
+
+    try:
+        while True:
+            result = await analyze_pair(pair)
+
+            if result.get("error"):
+                logger.warning(
+                    "Monitoring error for %s: %s",
+                    pair,
+                    result["error"]
+                )
+
+            else:
+                signal = result.get("signal")
+
+                if signal in ("LONG", "SHORT"):
+
+                    previous = LAST_SENT.get(chat_id)
+
+                    if previous != (pair, signal):
+                        await TELEGRAM_APP.bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                "🚨 НОВЫЙ ПОДТВЕРЖДЁННЫЙ СИГНАЛ\n\n"
+                                + format_analysis(result)
+                            ),
+                            reply_markup=main_keyboard()
+                        )
+
+                        LAST_SENT[chat_id] = (
+                            pair,
+                            signal
+                        )
+
+                else:
+                    LAST_SENT.pop(chat_id, None)
+
+            await asyncio.sleep(SCAN_INTERVAL)
+
+    except asyncio.CancelledError:
+        logger.info(
+            "Monitoring stopped for chat %s",
+            chat_id
+        )
+        raise
+
+    except Exception:
+        logger.exception(
+            "Monitoring crashed for chat %s",
+            chat_id
+        )
+
+    finally:
+        current_task = asyncio.current_task()
+
+        if MONITOR_TASKS.get(chat_id) is current_task:
+            MONITOR_TASKS.pop(chat_id, None)
+
+
+# =====================================
+# TELEGRAM APPLICATION
+# =====================================
+
+async def start_telegram():
+    global TELEGRAM_APP
+
+    if not TELEGRAM_BOT_TOKEN:
+        logger.warning(
+            "TELEGRAM_BOT_TOKEN is not configured"
+        )
+        return
+
+    TELEGRAM_APP = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .build()
+    )
+
+    TELEGRAM_APP.add_handler(
+        CommandHandler("start", start_command)
+    )
+
+    TELEGRAM_APP.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    await TELEGRAM_APP.initialize()
+    await TELEGRAM_APP.start()
+
+    if TELEGRAM_APP.updater:
+        await TELEGRAM_APP.updater.start_polling()
+
+    logger.info("Telegram bot started")
+
+
+async def stop_telegram():
+    global TELEGRAM_APP
+
+    for task in list(MONITOR_TASKS.values()):
+        task.cancel()
+
+    if MONITOR_TASKS:
+        await asyncio.gather(
+            *MONITOR_TASKS.values(),
+            return_exceptions=True
+        )
+
+    MONITOR_TASKS.clear()
+
+    if TELEGRAM_APP:
+        if TELEGRAM_APP.updater:
+            await TELEGRAM_APP.updater.stop()
+
+        await TELEGRAM_APP.stop()
+        await TELEGRAM_APP.shutdown()
+
+        TELEGRAM_APP = None
+
+
+# =====================================
+# FASTAPI LIFESPAN
+# =====================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global TELEGRAM_APP
+    await start_telegram()
 
-    scan_task = asyncio.create_task(automatic_scan())
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    yield
 
-    try:
-        if token:
-            TELEGRAM_APP = (
-                Application.builder()
-                .token(token)
-                .build()
-            )
-
-            TELEGRAM_APP.add_handler(
-                CommandHandler("start", telegram_start)
-            )
-
-            TELEGRAM_APP.add_handler(
-                CallbackQueryHandler(telegram_buttons)
-            )
-
-            await TELEGRAM_APP.initialize()
-            await TELEGRAM_APP.start()
-            await TELEGRAM_APP.updater.start_polling()
-
-        yield
-
-    finally:
-        scan_task.cancel()
-
-        try:
-            await scan_task
-        except asyncio.CancelledError:
-            pass
-
-        if TELEGRAM_APP:
-            await TELEGRAM_APP.updater.stop()
-            await TELEGRAM_APP.stop()
-            await TELEGRAM_APP.shutdown()
+    await stop_telegram()
 
 
 app = FastAPI(
-    title="Forex Hunter AI 4.0",
+    title=PROJECT_NAME,
+    version=VERSION,
     lifespan=lifespan
 )
 
 
+# =====================================
+# API REQUEST MODEL
+# =====================================
+
+class AnalyzeRequest(BaseModel):
+    pair: str
+    candles: list = []
+
+
+# =====================================
+# API ENDPOINTS
+# =====================================
+
 @app.get("/")
 async def home():
     return {
-        "name": "Forex Hunter AI 4.0",
+        "project": PROJECT_NAME,
+        "version": VERSION,
         "status": "online",
-        "pairs": len(PAIRS),
-        "scanning": SCANNING_ENABLED
+        "mode": "simulation",
+        "message": "Forex Hunter AI is running"
     }
 
 
 @app.get("/health")
 async def health():
     return {
-        "status": "ok",
-        "time": now_text(),
-        "scanning": SCANNING_ENABLED,
-        "scan_status": SCAN_STATUS
+        "status": "online",
+        "telegram": (
+            "connected"
+            if TELEGRAM_APP
+            else "not_configured"
+        ),
+        "mode": "simulation"
     }
 
 
 @app.get("/pairs")
 async def get_pairs():
     return {
-        "pairs": PAIRS,
-        "total": len(PAIRS)
+        "total_pairs": len(PAIRS),
+        "pairs": PAIRS
     }
-
-
-@app.get("/telegram-test")
-async def telegram_test():
-    sent = await send_telegram(
-        "🚀 FOREX HUNTER AI\n\n"
-        "✅ Подключение Telegram успешно!"
-    )
-
-    return {"telegram_sent": sent}
 
 
 @app.get("/scan/{pair:path}")
-async def scan(pair: str):
-    pair = pair.replace("-", "/").upper()
-
-    if pair not in PAIRS:
-        return {"error": "Валютная пара не найдена"}
-
-    return await scan_one_pair(pair)
+async def scan_endpoint(pair: str):
+    return await analyze_pair(pair)
 
 
-@app.get("/scan-all")
-async def scan_all():
-    results = []
+@app.post("/analyze")
+async def analyze_endpoint(request: AnalyzeRequest):
+    if request.pair.upper() not in PAIRS:
+        return {"error": "Unsupported currency pair"}
 
-    for pair in PAIRS:
-        results.append(await scan_one_pair(pair))
+    if request.candles:
+        return analyze_market(request.candles)
 
-    return {
-        "total": len(results),
-        "results": results,
-        "time": now_text()
-    }
-
-
-@app.get("/analyze")
-async def analyze_endpoint():
-    return await scan_all()
+    return await analyze_pair(request.pair)
 
 
 @app.get("/signal-history")
 async def signal_history():
     return {
         "total": len(SIGNAL_HISTORY),
-        "signals": SIGNAL_HISTORY
+        "history": SIGNAL_HISTORY[-MAX_HISTORY:]
     }
 
 
 @app.get("/dashboard-data")
 async def dashboard_data():
     return {
-        "pairs": len(PAIRS),
-        "scanning": SCANNING_ENABLED,
-        "scan_status": SCAN_STATUS,
-        "history": SIGNAL_HISTORY,
-        "time": now_text()
+        "project": PROJECT_NAME,
+        "version": VERSION,
+        "pairs": PAIRS,
+        "total_pairs": len(PAIRS),
+        "history_count": len(SIGNAL_HISTORY),
+        "monitoring_chats": len(MONITOR_TASKS),
+        "mode": "simulation"
     }
 
 
 @app.get("/market/{pair:path}")
-async def market(pair: str):
-    pair = pair.replace("-", "/").upper()
+async def market_endpoint(pair: str):
+    if pair.upper() not in PAIRS:
+        return {"error": "Unsupported currency pair"}
 
-    if pair not in PAIRS:
-        return {"error": "Валютная пара не найдена"}
-
-    candles = await get_candles(
+    m1 = await get_candles(
         pair,
         "1min",
-        outputsize=100
+        CANDLE_LIMIT
     )
 
-    if isinstance(candles, dict) and "error" in candles:
-        return candles
+    m5 = await get_candles(
+        pair,
+        "5min",
+        CANDLE_LIMIT
+    )
 
     return {
         "pair": pair,
-        "candles_count": len(candles),
-        "analysis": analyze_market(candles)
+        "M1": m1,
+        "M5": m5
     }
 
 
 @app.get("/backtest/{pair:path}")
-async def backtest_endpoint(
-    pair: str,
-    interval: str = "1min"
-):
-    pair = pair.replace("-", "/").upper()
-
-    if pair not in PAIRS:
-        return {
-            "status": "error",
-            "message": "Валютная пара не найдена"
-        }
-
-    if interval not in ("1min", "5min"):
-        return {
-            "status": "error",
-            "message": "Интервал должен быть 1min или 5min"
-        }
+async def backtest_endpoint(pair: str):
+    if pair.upper() not in PAIRS:
+        return {"error": "Unsupported currency pair"}
 
     candles = await get_candles(
         pair,
-        interval,
-        outputsize=100
+        "1min",
+        CANDLE_LIMIT
     )
 
-    if isinstance(candles, dict) and "error" in candles:
-        return {
-            "status": "error",
-            "message": candles["error"]
-        }
+    if isinstance(candles, dict):
+        return candles
 
-    result = run_backtest(
+    return run_backtest(
         candles,
-        initial_balance=10000,
-        risk_percent=1.0,
-        reward_risk=2.0
+        initial_balance=INITIAL_BALANCE,
+        risk_percent=RISK_PERCENT,
+        reward_risk=REWARD_RISK
     )
-
-    result["pair"] = pair
-    result["interval"] = interval
-
-    return result
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-async def dashboard():
-    return """
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Forex Hunter AI</title>
-        <style>
-            body {
-                background: #0b1120;
-                color: white;
-                font-family: Arial, sans-serif;
-                padding: 20px;
-            }
-            h1 { color: #38bdf8; }
-            .card {
-                background: #172033;
-                padding: 18px;
-                border-radius: 10px;
-                margin: 12px 0;
-            }
-        </style>
-    </head>
-    <body>
-        <h1>Forex Hunter AI 4.0</h1>
-        <div class="card">
-            <p>21 валютная пара</p>
-            <p>Анализ M1 + M5</p>
-            <p>Управление через Telegram</p>
-            <p>Состояние: <strong id="status">Проверка...</strong></p>
-        </div>
-        <script>
-            async function updateStatus() {
-                try {
-                    const response = await fetch("/health");
-                    const data = await response.json();
-
-                    document.getElementById("status").textContent =
-                        data.scanning ? "СКАНИРОВАНИЕ ВКЛЮЧЕНО" :
-                        "СКАНИРОВАНИЕ ОСТАНОВЛЕНО";
-                } catch (error) {
-                    document.getElementById("status").textContent =
-                        "СЕРВЕР НЕДОСТУПЕН";
-                }
-            }
-
-            updateStatus();
-            setInterval(updateStatus, 10000);
-        </script>
-    </body>
-    </html>
-    """
